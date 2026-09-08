@@ -18,6 +18,7 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
+  runCodexGoalCommand,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -946,6 +947,66 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+    }),
+  );
+});
+
+describe("native goal commands", () => {
+  it.effect("sets goals with budgets, preserves usage on pause/resume, reads and clears", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ method: string; payload: unknown }> = [];
+      const goal = {
+        threadId: "native-thread",
+        objective: "Ship",
+        status: "active" as const,
+        tokensUsed: 123,
+        timeUsedSeconds: 5,
+        createdAt: 1,
+        updatedAt: 2,
+      };
+      const client: Parameters<typeof runCodexGoalCommand>[0] = {
+        request: (method, payload) => {
+          requests.push({ method, payload });
+          return Effect.succeed(
+            (method === "thread/goal/clear"
+              ? {}
+              : { goal }) as CodexRpc.ClientRequestResponsesByMethod[typeof method],
+          );
+        },
+      };
+      NodeAssert.deepEqual(
+        yield* runCodexGoalCommand(client, "native-thread", {
+          action: "set",
+          objective: "Ship",
+          tokenBudget: 5000,
+        }),
+        goal,
+      );
+      yield* runCodexGoalCommand(client, "native-thread", { action: "pause" });
+      yield* runCodexGoalCommand(client, "native-thread", { action: "resume" });
+      NodeAssert.deepEqual(
+        yield* runCodexGoalCommand(client, "native-thread", { action: "status" }),
+        goal,
+      );
+      NodeAssert.equal(
+        yield* runCodexGoalCommand(client, "native-thread", { action: "clear" }),
+        null,
+      );
+      NodeAssert.deepEqual(requests, [
+        {
+          method: "thread/goal/set",
+          payload: {
+            threadId: "native-thread",
+            objective: "Ship",
+            tokenBudget: 5000,
+            status: "active",
+          },
+        },
+        { method: "thread/goal/set", payload: { threadId: "native-thread", status: "paused" } },
+        { method: "thread/goal/set", payload: { threadId: "native-thread", status: "active" } },
+        { method: "thread/goal/get", payload: { threadId: "native-thread" } },
+        { method: "thread/goal/clear", payload: { threadId: "native-thread" } },
+      ]);
     }),
   );
 });

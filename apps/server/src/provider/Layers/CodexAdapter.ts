@@ -2715,6 +2715,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     startSession,
     sendTurn,
     compaction: { type: "native", start: compactThread },
+    goal: (threadId, command) =>
+      requireSession(threadId).pipe(
+        Effect.flatMap((session) => session.runtime.goal(command)),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterSessionNotFoundError"
+            ? cause
+            : mapCodexRuntimeError(threadId, "thread/goal", cause),
+        ),
+      ),
     interruptTurn,
     readThread,
     rollbackThread,

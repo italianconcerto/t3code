@@ -247,6 +247,20 @@ describe("workspace provider snapshots", () => {
     ]);
   });
 
+  it("keeps server loop support in workspace-specific command menus without inventing support on older servers", () => {
+    const withLoop = { ...provider, slashCommands: [...provider.slashCommands, { name: "loop" }] };
+    expect(
+      resolveProviderSlashCommandsForCwd(withLoop, "/workspace/project-a").map(
+        (command) => command.name,
+      ),
+    ).toEqual(["project", "loop"]);
+    expect(
+      resolveProviderSlashCommandsForCwd(provider, "/workspace/project-a").map(
+        (command) => command.name,
+      ),
+    ).toEqual(["project"]);
+  });
+
   it("keeps the machine snapshot before this cwd has a provider snapshot", () => {
     expect(resolveProviderSkillsForCwd(provider, "/workspace/project-b")).toEqual(provider.skills);
     expect(resolveProviderSlashCommandsForCwd(provider, null)).toEqual(provider.slashCommands);

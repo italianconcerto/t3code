@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -55,6 +56,14 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import {
+  parseAutomationCommand,
+  claimLoopRun,
+  LOOP_LIFETIME_MS,
+  MAX_ACTIVE_LOOPS,
+  type ScheduledLoop,
+} from "../automationCommands.ts";
+
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
@@ -71,7 +80,9 @@ type ProviderIntentEvent = Extract<
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
-      | "thread.settled";
+      | "thread.settled"
+      | "thread.deleted"
+      | "thread.archived";
   }
 >;
 
@@ -347,6 +358,7 @@ const make = Effect.gen(function* () {
   const threadModelSelections = new Map<string, ModelSelection>();
   const compactingThreadIds = new Set<ThreadId>();
   const stoppingThreadIds = new Set<ThreadId>();
+  const loops = new Map<ThreadId, ScheduledLoop>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -1180,6 +1192,86 @@ const make = Effect.gen(function* () {
     processThreadTitleRegenerationSafely,
   );
 
+  const appendAutomationResult = Effect.fn("appendAutomationResult")(function* (
+    threadId: ThreadId,
+    summary: string,
+    requestId?: string,
+  ) {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: yield* serverCommandId("automation"),
+      threadId,
+      activity: {
+        id: yield* serverEventId(),
+        tone: "info",
+        kind: "provider.command.completed",
+        summary,
+        payload: requestId !== undefined ? { requestId } : {},
+        turnId: null,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+  });
+
+  const runDueLoops = Effect.fn("runDueLoops")(function* () {
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    for (const [threadId, loop] of loops) {
+      if (now < loop.nextRunAt && now < loop.expiresAt) continue;
+      const thread = yield* resolveThreadShell(threadId);
+      if (
+        !thread ||
+        thread.archivedAt !== null ||
+        thread.settledOverride === "settled" ||
+        now >= loop.expiresAt
+      ) {
+        loops.delete(threadId);
+        if (thread) yield* appendAutomationResult(threadId, "Loop stopped or expired.");
+        continue;
+      }
+      const busy =
+        thread.session?.status === "running" ||
+        thread.session?.status === "starting" ||
+        thread.hasPendingApprovals ||
+        thread.hasPendingUserInput ||
+        thread.backgroundLiveness != null ||
+        compactingThreadIds.has(threadId) ||
+        stoppingThreadIds.has(threadId);
+      if (!claimLoopRun(loop, now, busy)) continue;
+      const createdAt = DateTime.formatIso(DateTime.makeUnsafe(now));
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.turn.start",
+          commandId: yield* serverCommandId("loop-turn"),
+          threadId,
+          message: {
+            messageId: MessageId.make(yield* crypto.randomUUIDv4),
+            role: "user",
+            text: loop.prompt,
+            attachments: [],
+          },
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt,
+        })
+        .pipe(
+          Effect.catchCause((cause) => {
+            loops.delete(threadId);
+            return appendProviderFailureActivity({
+              threadId,
+              kind: "provider.turn.start.failed",
+              summary: "Loop stopped after dispatch failure",
+              detail: formatFailureDetail(cause),
+              turnId: null,
+              createdAt,
+            });
+          }),
+        );
+    }
+  });
+
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
@@ -1224,6 +1316,7 @@ const make = Effect.gen(function* () {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
+      loops.delete(thread.id);
       const detail = formatFailureDetail(cause);
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
@@ -1295,6 +1388,97 @@ const make = Effect.gen(function* () {
       return true;
     }).pipe(Effect.catchCause((cause) => recoverTurnStartFailure(cause).pipe(Effect.as(true))));
     if (authCommandHandled) {
+      loops.delete(thread.id);
+      return;
+    }
+
+    const automation = parseAutomationCommand(message.text);
+    if (automation !== undefined) {
+      if (automation.kind === "invalid" || (message.attachments?.length ?? 0) > 0) {
+        yield* appendTurnStartFailure(
+          "Command rejected",
+          automation.kind === "invalid"
+            ? automation.detail
+            : "Send /goal and /loop without attachments.",
+        );
+        return;
+      }
+      if (automation.kind === "loop") {
+        if (automation.action === "start") {
+          if (!loops.has(thread.id) && loops.size >= MAX_ACTIVE_LOOPS) {
+            yield* appendTurnStartFailure(
+              "Loop limit reached",
+              "Stop an existing loop first (maximum 50 active loops).",
+            );
+            return;
+          }
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          loops.set(thread.id, {
+            prompt: automation.prompt,
+            intervalMs: automation.intervalMs,
+            nextRunAt: now + automation.intervalMs,
+            expiresAt: now + LOOP_LIFETIME_MS,
+            runs: 0,
+          });
+          yield* appendAutomationResult(
+            thread.id,
+            `Loop scheduled every ${automation.intervalMs / 1000}s: ${automation.prompt}. Expires in 3 days; stops when the server restarts. Use /loop stop to cancel.`,
+            message.id,
+          );
+        } else if (automation.action === "stop") {
+          const stopped = loops.delete(thread.id);
+          yield* appendAutomationResult(
+            thread.id,
+            stopped
+              ? "Loop stopped. Any current turn continues; use Stop to interrupt it."
+              : "No active loop.",
+            message.id,
+          );
+        } else {
+          const loop = loops.get(thread.id);
+          yield* appendAutomationResult(
+            thread.id,
+            loop
+              ? `Loop: ${loop.prompt} • every ${loop.intervalMs / 1000}s • ${loop.runs} runs • next ${DateTime.formatIso(DateTime.makeUnsafe(loop.nextRunAt))} • expires ${DateTime.formatIso(DateTime.makeUnsafe(loop.expiresAt))}`
+              : "No active loop.",
+            message.id,
+          );
+        }
+        return;
+      }
+      yield* Effect.gen(function* () {
+        // Goal APIs start their own native turns. Do not send the slash command as model input.
+        const instanceId =
+          event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
+        const instance = yield* providerService.getInstanceInfo(instanceId);
+        if (instance.driverKind !== "codex") {
+          yield* appendTurnStartFailure(
+            "Goal unavailable",
+            "This provider does not support /goal. Select a Codex provider.",
+          );
+          return;
+        }
+        yield* ensureThreadWorktree(thread);
+        yield* ensureSessionForThread(
+          thread.id,
+          event.payload.createdAt,
+          event.payload.modelSelection !== undefined
+            ? { modelSelection: event.payload.modelSelection }
+            : {},
+        );
+        const goal = yield* providerService.goal(thread.id, automation.command);
+        yield* appendAutomationResult(
+          thread.id,
+          goal
+            ? `Goal ${goal.status}: ${goal.objective} • ${goal.tokensUsed}${goal.tokenBudget != null ? ` / ${goal.tokenBudget}` : ""} tokens • ${goal.timeUsedSeconds}s`
+            : "No active goal.",
+          message.id,
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          appendTurnStartFailure("Goal command failed", formatFailureDetail(cause)),
+        ),
+      );
       return;
     }
 
@@ -1452,6 +1636,7 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    loops.delete(thread.id);
     const session = thread.session;
     if (!session || session.status === "stopped") {
       return yield* appendProviderFailureActivity({
@@ -1707,6 +1892,10 @@ const make = Effect.gen(function* () {
       eventType: event.type,
     });
     switch (event.type) {
+      case "thread.deleted":
+      case "thread.archived":
+        loops.delete(event.payload.threadId);
+        return;
       case "thread.meta-updated":
         yield* threadTitleRegenerationWorker.enqueue(event);
         return;
@@ -1736,9 +1925,11 @@ const make = Effect.gen(function* () {
         yield* processUserInputResponseRequested(event);
         return;
       case "thread.session-stop-requested":
+        loops.delete(event.payload.threadId);
         yield* processSessionStopRequested(event);
         return;
       case "thread.settled": {
+        loops.delete(event.payload.threadId);
         const thread = yield* projectionSnapshotQuery.getThreadShellById(event.payload.threadId);
         if (
           Option.isNone(thread) ||
@@ -1772,9 +1963,22 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processDomainEventSafely);
+  // Timer wakes and user commands share a worker, so cancellation cannot race a due dispatch.
+  const worker = yield* makeDrainableWorker(
+    (event: ProviderIntentEvent | { type: "automation.tick" }) =>
+      event.type === "automation.tick"
+        ? runDueLoops().pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Loop scheduler failed", { cause: Cause.pretty(cause) }),
+            ),
+          )
+        : processDomainEventSafely(event),
+  );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    yield* forkParked(
+      worker.enqueue({ type: "automation.tick" }).pipe(Effect.repeat(Schedule.spaced("1 second"))),
+    );
     const interruptedTitleRegenerations = yield* findInterruptedThreadTitleRegenerations().pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
@@ -1795,7 +1999,9 @@ const make = Effect.gen(function* () {
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
-        event.type === "thread.settled"
+        event.type === "thread.settled" ||
+        event.type === "thread.deleted" ||
+        event.type === "thread.archived"
       ) {
         return yield* worker.enqueue(event);
       }

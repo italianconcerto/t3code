@@ -1699,6 +1699,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const goal: ProviderServiceMethod<"goal"> = Effect.fn("goal")(function* (threadId, command) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.goal",
+      allowRecovery: true,
+    });
+    if (routed.adapter.goal === undefined) {
+      return yield* toValidationError(
+        "ProviderService.goal",
+        `Provider '${routed.adapter.provider}' does not support /goal. Use a Codex provider.`,
+      );
+    }
+    return yield* routed.adapter.goal(threadId, command);
+  });
+
   const compactThread: ProviderServiceMethod<"compactThread"> = Effect.fn("compactThread")(
     function* (threadId, modelSelection, requestId) {
       const routed = yield* resolveRoutableSession({
@@ -2266,6 +2281,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     compactThread,
+    goal,
     interruptTurn,
     respondToRequest,
     respondToUserInput,

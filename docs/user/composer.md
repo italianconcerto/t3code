@@ -109,6 +109,30 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+### Goals and recurring prompts
+
+With a Codex provider, send `/goal Finish the migration` to start a persistent goal.
+Codex continues working until the goal completes or becomes blocked, paused, or
+limited. Use `/goal --budget 50000 Finish the migration` to set a token budget.
+`/goal` or `/goal status` shows progress; `/goal pause`, `/goal resume`, and
+`/goal clear` manage the goal. Clearing a goal removes the objective, not the
+conversation. These commands require a Codex version with its goals feature enabled;
+unsupported versions report an error instead of receiving the command as a prompt.
+
+Send `/loop 5m Check the build and report failures` to repeat a prompt in this
+thread. Omit the interval for a ten-minute interval. Units are `s`, `m`, `h`, and
+`d`; intervals range from one second to three days. The first run starts after
+one interval. Sending another `/loop` prompt replaces this thread's schedule.
+`/loop` or `/loop status` shows the schedule; `/loop stop` cancels future runs.
+The thread's Stop action cancels future runs and interrupts current work.
+
+Loops run on the connected environment's server, even if you close the client.
+They expire after three days and are cleared when the server restarts. Busy
+threads, pending approvals, and unanswered questions delay runs without building
+a backlog. Archiving or settling a thread cancels its loop. Runs use the thread's
+current model and permission mode. At most 50 threads can have an active loop.
+Send these commands without attachments.
+
 ## Images and videos in messages
 
 Select an image or video attachment or link to preview it. Playback support depends

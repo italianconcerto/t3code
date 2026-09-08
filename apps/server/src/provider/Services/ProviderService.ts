@@ -31,6 +31,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { GoalCommand, ThreadGoal } from "../goal.ts";
 import type { ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
@@ -53,6 +54,11 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  readonly goal: (
+    threadId: ThreadId,
+    command: GoalCommand,
+  ) => Effect.Effect<ThreadGoal | null, ProviderServiceError>;
 
   readonly compactThread: (
     threadId: ThreadId,

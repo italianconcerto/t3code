@@ -1279,7 +1279,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.activity-appended": {
-          if (event.payload.activity.kind === "context-compaction") {
+          if (
+            event.payload.activity.kind === "context-compaction" ||
+            event.payload.activity.kind === "provider.command.completed"
+          ) {
             const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId(
               event.payload,
             );
