@@ -4,6 +4,36 @@
 
 This document covers the unified release workflow for stable and nightly desktop releases.
 
+## Personal fork releases
+
+The `italianconcerto/t3code` fork distributes macOS Apple Silicon builds through its own
+GitHub Releases. Set `T3CODE_DESKTOP_UPDATE_REPOSITORY=italianconcerto/t3code` when building;
+the packaged `Contents/Resources/app-update.yml` must point to that repository. Publish
+the DMG, ZIP, their blockmaps, and `latest-mac.yml` together. The ZIP is the updater payload.
+Check its SHA-512 against the manifest after signing and notarization, before publication.
+
+Version `0.0.41` adds native Codex `/goal` commands and server-managed `/loop` scheduling.
+All four release package versions are aligned. This fork release does not publish the
+upstream `t3` npm package or deploy the upstream hosted services. Remote environments
+need this fork's server build to use its new commands; updating only a desktop client
+does not update a remote server.
+
+The old `0.0.40-local.1` installation has no update feed and no complete application
+signature. Install the first signed fork release manually, then use **Check for updates**
+for subsequent versions. Keep the same Developer ID signing identity for future releases.
+Do not replace or quit the live app while it is running an agent task.
+
+For local builds, use Node 24, Rust 1.95 or newer, and the workspace Vite+ executable.
+Run `scripts/update-release-package-versions.ts` before building. The upstream `--signed`
+path also requires upstream passkey provisioning; a personal fork without that profile
+can build with `--keep-stage`, sign the staged app using `@electron/osx-sign`, notarize and
+staple it, then regenerate the DMG, ZIP, blockmaps and manifest with electron-builder's
+`--prepackaged` option. Do not publish archives made before the final signature/staple.
+Use a Keychain profile with `notarytool`; never commit or put Apple credentials in notes.
+
+The upstream unified release workflow also publishes npm packages and production services.
+Do not use it unchanged for a personal desktop-only fork release.
+
 ## What the workflow does
 
 - Workflow: `.github/workflows/release.yml`
