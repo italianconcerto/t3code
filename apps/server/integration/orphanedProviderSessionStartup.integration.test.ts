@@ -113,6 +113,7 @@ const startupDependencies = Layer.mergeAll(
   Layer.succeed(ProviderService.ProviderService, {
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
+    goal: () => Effect.succeed(null),
     compactThread: () => Effect.die("unused"),
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),

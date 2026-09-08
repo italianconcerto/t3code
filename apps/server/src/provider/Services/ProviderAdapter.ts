@@ -25,6 +25,8 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { GoalCommand, ThreadGoal } from "../goal.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 /**
@@ -87,6 +89,12 @@ export interface ProviderAdapterShape<TError> {
 
   /** Omitted when this adapter does not support manual context compaction. */
   readonly compaction?: ProviderCompaction<TError>;
+
+  /** Native persisted goals; omitted for providers without a goal API. */
+  readonly goal?: (
+    threadId: ThreadId,
+    command: GoalCommand,
+  ) => Effect.Effect<ThreadGoal | null, TError>;
 
   /**
    * Interrupt an active turn.

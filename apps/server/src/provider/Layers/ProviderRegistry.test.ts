@@ -1,3 +1,5 @@
+import { LOOP_SLASH_COMMAND } from "../providerSnapshot.ts";
+import { GOAL_SLASH_COMMAND } from "../goal.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -407,11 +409,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
           ]);
           assert.deepStrictEqual(status.slashCommands.slice(1), [
+            GOAL_SLASH_COMMAND,
             {
               name: "feedback",
               description: "Send this thread and Codex logs to OpenAI",
               input: { hint: "Describe the issue (optional)" },
             },
+            LOOP_SLASH_COMMAND,
           ]);
         }),
       );
@@ -2845,6 +2849,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               description: "Review a pull request",
               input: { hint: "pr-or-branch" },
             },
+            LOOP_SLASH_COMMAND,
           ]);
         }).pipe(
           Effect.provide(
@@ -2889,6 +2894,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               description: "Explore and refine UI",
               input: { hint: "component-or-screen" },
             },
+            LOOP_SLASH_COMMAND,
           ]);
         }).pipe(
           Effect.provide(

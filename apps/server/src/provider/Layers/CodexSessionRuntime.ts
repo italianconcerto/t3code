@@ -1,3 +1,4 @@
+import type { GoalCommand, ThreadGoal } from "../goal.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -190,7 +191,34 @@ export interface CodexThreadSnapshot {
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
 }
 
+export const runCodexGoalCommand = Effect.fn("runCodexGoalCommand")(function* (
+  client: Pick<CodexClient.CodexAppServerClient["Service"], "request">,
+  threadId: string,
+  command: GoalCommand,
+) {
+  if (command.action === "clear") {
+    yield* client.request("thread/goal/clear", { threadId });
+    return null;
+  }
+  if (command.action === "status") {
+    return (yield* client.request("thread/goal/get", { threadId })).goal ?? null;
+  }
+  return (yield* client.request("thread/goal/set", {
+    threadId,
+    ...(command.action === "set"
+      ? {
+          objective: command.objective,
+          ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+        }
+      : {}),
+    status: command.action === "pause" ? "paused" : "active",
+  })).goal;
+});
+
 export interface CodexSessionRuntimeShape {
+  readonly goal: (
+    command: GoalCommand,
+  ) => Effect.Effect<ThreadGoal | null, CodexSessionRuntimeError>;
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
   readonly sendTurn: (
@@ -2321,6 +2349,10 @@ export const makeCodexSessionRuntime = (
     return {
       start,
       getSession: Ref.get(sessionRef),
+      goal: (command) =>
+        readProviderThreadId.pipe(
+          Effect.flatMap((threadId) => runCodexGoalCommand(client, threadId, command)),
+        ),
       compactThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });

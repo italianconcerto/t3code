@@ -68,7 +68,9 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Fiber from "effect/Fiber";
 import * as Clock from "effect/Clock";
+import * as TestClock from "effect/testing/TestClock";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
@@ -166,6 +168,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   async function createHarness(input?: {
+    readonly testClock?: boolean;
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
@@ -267,6 +270,7 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
+    const goal = vi.fn<ProviderServiceShape["goal"]>(() => Effect.succeed(null));
     const compactThread = vi.fn((_: ThreadId) => input?.compactThreadEffect?.() ?? Effect.void);
     const interruptTurn = vi.fn((_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
@@ -354,6 +358,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       compactThread,
+      goal,
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -480,7 +485,9 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
-    runtime = ManagedRuntime.make(layer);
+    runtime = ManagedRuntime.make(
+      layer.pipe(Layer.provideMerge(input?.testClock ? TestClock.layer() : Layer.empty)),
+    );
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
@@ -567,7 +574,7 @@ describe("ProviderCommandReactor", () => {
     }
 
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(
+    await runtime.runPromise(
       reactor
         .start()
         .pipe(
@@ -596,6 +603,7 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       compactThread,
+      goal,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
@@ -950,6 +958,162 @@ describe("ProviderCommandReactor", () => {
       );
     }),
   );
+
+  const commandInput = (text: string, id: string) => ({
+    type: "thread.turn.start" as const,
+    commandId: CommandId.make(`cmd-${id}`),
+    threadId: ThreadId.make("thread-1"),
+    message: { messageId: MessageId.make(id), role: "user" as const, text, attachments: [] },
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    runtimeMode: "approval-required" as const,
+    createdAt: "2026-01-01T00:00:01.000Z",
+  });
+
+  const dispatchAutomation = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    text: string,
+    id: string,
+  ) =>
+    harness.runEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const events = yield* harness.engine.subscribeDomainEvents;
+          const result = yield* events.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "thread.activity-appended" &&
+                event.metadata.requestId === id &&
+                ["provider.command.completed", "provider.turn.start.failed"].includes(
+                  event.payload.activity.kind,
+                ),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* harness.engine.dispatch(commandInput(text, id));
+          return yield* Fiber.join(result);
+        }),
+      ),
+    );
+
+  it.each([
+    "/goal --budget 5000 Finish migration",
+    "/goal status",
+    "/goal pause",
+    "/goal resume",
+    "/goal clear",
+  ])("handles %s natively without a prompt or dangling pending turn", async (text) => {
+    const harness = await createHarness();
+    await dispatchAutomation(harness, text, "goal-command");
+    await harness.drain();
+    expect(harness.goal).toHaveBeenCalledOnce();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readPendingTurnStarts()).toEqual([]);
+    const state = await harness.readModel();
+    expect(state.threads[0]?.activities).toContainEqual(
+      expect.objectContaining({ kind: "provider.command.completed" }),
+    );
+  });
+
+  it("rejects goals on other providers and invalid commands without sending model input", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "claude-sonnet-4",
+      },
+    });
+    for (const [index, text] of ["/goal Finish it", "/loop 0s do it"].entries()) {
+      await dispatchAutomation(harness, text, `invalid-${index}`);
+      await harness.drain();
+    }
+    expect(harness.goal).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readPendingTurnStarts()).toEqual([]);
+  });
+
+  it("runs a scheduled prompt after the interval and cancels future runs", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/loop 5s Check CI", "loop-start");
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readPendingTurnStarts()).toEqual([]);
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: "Check CI" }));
+    await dispatchAutomation(harness, "/loop stop", "loop-stop");
+    await harness.drain();
+    const runs = harness.sendTurn.mock.calls.length;
+    await harness.runEffect(TestClock.adjust("10 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledTimes(runs);
+  });
+
+  it("defers loops while awaiting input, replaces schedules, and stops when archived", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/loop 5s Old prompt", "old-loop");
+    await dispatchAutomation(harness, "/loop 10s New prompt", "new-loop");
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("question"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("question"),
+          kind: "user-input.requested",
+          tone: "approval",
+          summary: "Need an answer",
+          payload: { requestId: "question-1", questions: [] },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.runEffect(TestClock.adjust("10 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    await dispatchAutomation(harness, "/loop status", "loop-status");
+    expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.command.completed",
+        summary: expect.stringContaining("Loop: New prompt"),
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("archive-loop"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    await harness.drain();
+    await harness.runEffect(TestClock.adjust("10 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("reports goal API failures and does not fall back to a model prompt", async () => {
+    const harness = await createHarness();
+    harness.goal.mockReturnValue(
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: ProviderDriverKind.make("codex"),
+          method: "thread/goal",
+          detail: "goals feature is disabled",
+        }),
+      ),
+    );
+    await dispatchAutomation(harness, "/goal Ship it", "disabled-goal");
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readPendingTurnStarts()).toEqual([]);
+    expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.turn.start.failed",
+        summary: "Goal command failed",
+      }),
+    );
+  });
 
   effectIt.effect("rejects /compact without conversation context", () =>
     Effect.gen(function* () {

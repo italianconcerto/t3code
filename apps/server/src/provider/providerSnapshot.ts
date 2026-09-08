@@ -189,6 +189,12 @@ export function buildBooleanOptionDescriptor(input: {
   };
 }
 
+export const LOOP_SLASH_COMMAND = {
+  name: "loop",
+  description: "Repeat a prompt on this server: [interval] prompt | status | stop",
+  input: { hint: "5m check the build | status | stop" },
+} satisfies ServerProviderSlashCommand;
+
 export function buildServerProvider(input: {
   driver?: ProviderDriverKind;
   presentation: ServerProviderPresentation;
@@ -223,7 +229,10 @@ export function buildServerProvider(input: {
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
     models: input.models,
-    slashCommands: [...(input.slashCommands ?? [])],
+    slashCommands: [
+      ...(input.slashCommands ?? []).filter((command) => command.name !== "loop"),
+      LOOP_SLASH_COMMAND,
+    ],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
     ...(versionAdvisory ? { versionAdvisory } : {}),

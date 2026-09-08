@@ -934,7 +934,11 @@ export function latestTurnStartFailureId(
   if (latestUserMessageId === null) return null;
   return (
     activeThread?.activities.findLast((activity) => {
-      if (activity.kind !== "provider.turn.start.failed") return false;
+      if (
+        activity.kind !== "provider.turn.start.failed" &&
+        activity.kind !== "provider.command.completed"
+      )
+        return false;
       const payload =
         typeof activity.payload === "object" && activity.payload !== null
           ? (activity.payload as { readonly requestId?: unknown })

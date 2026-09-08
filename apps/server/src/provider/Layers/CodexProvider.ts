@@ -1,3 +1,4 @@
+import { GOAL_SLASH_COMMAND } from "../goal.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -670,6 +671,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     skills: snapshot.skills,
     slashCommands: [
       COMPACT_SLASH_COMMAND,
+      GOAL_SLASH_COMMAND,
       {
         name: "feedback",
         description: "Send this thread and Codex logs to OpenAI",
