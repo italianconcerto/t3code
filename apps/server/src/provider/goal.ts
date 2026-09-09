@@ -12,6 +12,6 @@ export interface ThreadGoal {
 
 export const GOAL_SLASH_COMMAND = {
   name: "goal",
-  description: "Manage a Codex goal: objective, status, pause, resume, clear",
+  description: "Manage a persistent goal: objective, status, pause, resume, clear",
   input: { hint: "[--budget tokens] objective | status | pause | resume | clear" },
 };

@@ -247,13 +247,16 @@ describe("workspace provider snapshots", () => {
     ]);
   });
 
-  it("keeps server loop support in workspace-specific command menus without inventing support on older servers", () => {
-    const withLoop = { ...provider, slashCommands: [...provider.slashCommands, { name: "loop" }] };
+  it("keeps server automation commands in workspace-specific menus without inventing support on older servers", () => {
+    const withAutomation = {
+      ...provider,
+      slashCommands: [...provider.slashCommands, { name: "goal" }, { name: "loop" }],
+    };
     expect(
-      resolveProviderSlashCommandsForCwd(withLoop, "/workspace/project-a").map(
+      resolveProviderSlashCommandsForCwd(withAutomation, "/workspace/project-a").map(
         (command) => command.name,
       ),
-    ).toEqual(["project", "loop"]);
+    ).toEqual(["project", "goal", "loop"]);
     expect(
       resolveProviderSlashCommandsForCwd(provider, "/workspace/project-a").map(
         (command) => command.name,

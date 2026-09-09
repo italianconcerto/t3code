@@ -111,13 +111,17 @@ provider supports it. Web and desktop also offer compaction from the context met
 
 ### Goals and recurring prompts
 
-With a Codex provider, send `/goal Finish the migration` to start a persistent goal.
-Codex continues working until the goal completes or becomes blocked, paused, or
-limited. Use `/goal --budget 50000 Finish the migration` to set a token budget.
+Send `/goal Finish the migration` to start a persistent goal. Codex uses its native
+goal support and continues until the goal completes or becomes blocked, paused, or
+limited. For other providers, T3 Code includes the active objective in each future
+turn until it is paused or cleared; these managed goals are cleared when the server
+restarts. Use `/goal --budget 50000 Finish the migration` to set a token budget.
+Codex enforces that budget; other providers receive it as guidance because they
+do not expose native goal accounting.
 `/goal` or `/goal status` shows progress; `/goal pause`, `/goal resume`, and
 `/goal clear` manage the goal. Clearing a goal removes the objective, not the
-conversation. These commands require a Codex version with its goals feature enabled;
-unsupported versions report an error instead of receiving the command as a prompt.
+conversation. Native goals require a Codex version with its goals feature enabled;
+unsupported Codex versions report an error instead of receiving the command as a prompt.
 
 Send `/loop 5m Check the build and report failures` to repeat a prompt in this
 thread. Omit the interval for a ten-minute interval. Units are `s`, `m`, `h`, and

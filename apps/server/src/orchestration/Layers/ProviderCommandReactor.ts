@@ -4,6 +4,7 @@ import {
   EventId,
   MessageId,
   type ModelSelection,
+  type OrchestrationMessage,
   type OrchestrationEvent,
   ProviderDriverKind,
   type ProjectId,
@@ -118,6 +119,58 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
+const PROVIDER_HANDOFF_MAX_CHARS = 40_000;
+
+interface ManagedProviderGoal {
+  readonly objective: string;
+  readonly tokenBudget?: number;
+  status: "active" | "paused";
+}
+
+function buildManagedGoalInput(goal: ManagedProviderGoal, currentInput: string): string {
+  const budget =
+    goal.tokenBudget !== undefined
+      ? `\nTreat ${goal.tokenBudget} tokens as the requested total budget; T3 cannot enforce it for this provider.`
+      : "";
+  return `T3 Code is managing this persistent goal for a provider without a native goal API. Keep the goal in scope while handling the current request. Work toward it autonomously, verify results, and clearly report blockers or completion.${budget}\n\n<goal>\n${goal.objective}\n</goal>\n\n<current_request>\n${currentInput}\n</current_request>`;
+}
+
+function formatProviderHandoffMessage(message: OrchestrationMessage): string | undefined {
+  if (message.role === "system") return undefined;
+  const text = assistantCitationsToPlainText(message.text).trim();
+  const attachmentNames = (message.attachments ?? [])
+    .map((attachment) => attachment.name)
+    .join(", ");
+  const content = [text, attachmentNames ? `[Attachments: ${attachmentNames}]` : ""]
+    .filter(Boolean)
+    .join("\n");
+  return content ? `${message.role.toUpperCase()}:\n${content}` : undefined;
+}
+
+export function buildProviderHandoffInput(input: {
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly currentMessageId: MessageId;
+  readonly currentInput: string;
+}): string {
+  const sections: Array<string> = [];
+  let size = 0;
+  let truncated = false;
+  for (const message of input.messages.toReversed()) {
+    if (message.id === input.currentMessageId) continue;
+    const section = formatProviderHandoffMessage(message);
+    if (!section) continue;
+    const addedSize = section.length + (sections.length > 0 ? 2 : 0);
+    if (size + addedSize > PROVIDER_HANDOFF_MAX_CHARS) {
+      truncated = true;
+      break;
+    }
+    sections.unshift(section);
+    size += addedSize;
+  }
+  if (sections.length === 0) return input.currentInput;
+  const history = `${truncated ? "[Earlier conversation omitted]\n\n" : ""}${sections.join("\n\n")}`;
+  return `You are continuing an existing T3 Code conversation after the user changed provider or subscription. Use the visible conversation below as context. Do not repeat completed work. Continue with the current request.\n\n<prior_conversation>\n${history}\n</prior_conversation>\n\n<current_request>\n${input.currentInput}\n</current_request>`;
+}
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
@@ -359,6 +412,7 @@ const make = Effect.gen(function* () {
   const compactingThreadIds = new Set<ThreadId>();
   const stoppingThreadIds = new Set<ThreadId>();
   const loops = new Map<ThreadId, ScheduledLoop>();
+  const managedGoals = new Map<ThreadId, ManagedProviderGoal>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -631,20 +685,6 @@ const make = Effect.gen(function* () {
         : thread.modelSelection.instanceId;
     const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
-    const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterRequestError({
-            provider: providerErrorLabelFromInstanceHint({
-              instanceId: String(currentInstanceId),
-              modelSelectionInstanceId: String(thread.modelSelection.instanceId),
-              sessionProvider: thread.session?.providerName ?? undefined,
-            }),
-            method: "thread.turn.start",
-            detail: `Thread '${threadId}' references unknown provider instance '${currentInstanceId}'. The instance is not configured in this build.`,
-          }),
-      ),
-    );
     const desiredInfo = yield* providerService.getInstanceInfo(desiredInstanceId).pipe(
       Effect.mapError(
         () =>
@@ -695,29 +735,6 @@ const make = Effect.gen(function* () {
             : thread.modelSelection,
         requestedModelSelection,
       });
-    }
-    if (
-      thread.session !== null &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
     }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -807,9 +824,10 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const resumeCursor =
+        shouldRestartForModelChange || instanceChanged
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -851,6 +869,7 @@ const make = Effect.gen(function* () {
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly messageId: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -863,6 +882,13 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const previousInstanceId =
+      thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+    const switchesProviderInstance =
+      input.modelSelection !== undefined && input.modelSelection.instanceId !== previousInstanceId;
+    const handoffThread = switchesProviderInstance
+      ? yield* resolveThreadDetail(input.threadId)
+      : undefined;
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
@@ -870,7 +896,15 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const normalizedInput = toNonEmptyProviderInput(
+      switchesProviderInstance && handoffThread
+        ? buildProviderHandoffInput({
+            messages: handoffThread.messages,
+            currentMessageId: input.messageId,
+            currentInput: input.messageText,
+          })
+        : input.messageText,
+    );
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -1301,6 +1335,7 @@ const make = Effect.gen(function* () {
       return;
     }
     const { message, hasOtherUserMessages } = turnStart.value;
+    let providerMessageText = message.text;
     const appendTurnStartFailure = (summary: string, detail: string) =>
       appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1446,15 +1481,53 @@ const make = Effect.gen(function* () {
         }
         return;
       }
+      let continueWithManagedGoal = false;
       yield* Effect.gen(function* () {
         // Goal APIs start their own native turns. Do not send the slash command as model input.
         const instanceId =
           event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
         const instance = yield* providerService.getInstanceInfo(instanceId);
         if (instance.driverKind !== "codex") {
-          yield* appendTurnStartFailure(
-            "Goal unavailable",
-            "This provider does not support /goal. Select a Codex provider.",
+          const command = automation.command;
+          if (command.action === "set") {
+            managedGoals.set(thread.id, {
+              objective: command.objective,
+              ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+              status: "active",
+            });
+            providerMessageText = command.objective;
+            continueWithManagedGoal = true;
+            yield* appendAutomationResult(
+              thread.id,
+              "T3 goal active. T3 will include it in future turns until paused or cleared. This managed goal stops when the server restarts.",
+              message.id,
+            );
+            return;
+          }
+          const goal = managedGoals.get(thread.id);
+          if (command.action === "clear") {
+            yield* appendAutomationResult(
+              thread.id,
+              managedGoals.delete(thread.id) ? "Goal cleared." : "No active goal.",
+              message.id,
+            );
+            return;
+          }
+          if (command.action === "pause" || command.action === "resume") {
+            if (goal) goal.status = command.action === "pause" ? "paused" : "active";
+            yield* appendAutomationResult(
+              thread.id,
+              goal ? `Goal ${goal.status}: ${goal.objective}` : "No active goal.",
+              message.id,
+            );
+            return;
+          }
+          yield* appendAutomationResult(
+            thread.id,
+            goal
+              ? `Goal ${goal.status}: ${goal.objective}${goal.tokenBudget !== undefined ? ` • budget ${goal.tokenBudget} tokens` : ""}`
+              : "No active goal.",
+            message.id,
           );
           return;
         }
@@ -1479,7 +1552,12 @@ const make = Effect.gen(function* () {
           appendTurnStartFailure("Goal command failed", formatFailureDetail(cause)),
         ),
       );
-      return;
+      if (!continueWithManagedGoal) return;
+    }
+
+    const managedGoal = managedGoals.get(thread.id);
+    if (managedGoal?.status === "active") {
+      providerMessageText = buildManagedGoalInput(managedGoal, providerMessageText);
     }
 
     yield* ensureThreadWorktree(thread);
@@ -1493,7 +1571,7 @@ const make = Effect.gen(function* () {
           projects: project ? [project] : [],
         }) ?? process.cwd();
       const generationInput = {
-        messageText: assistantCitationsToPlainText(message.text),
+        messageText: assistantCitationsToPlainText(providerMessageText),
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
         ...(event.payload.titleSeed !== undefined ? { titleSeed: event.payload.titleSeed } : {}),
       };
@@ -1608,7 +1686,8 @@ const make = Effect.gen(function* () {
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageId: event.payload.messageId,
+      messageText: providerMessageText,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
@@ -1895,6 +1974,7 @@ const make = Effect.gen(function* () {
       case "thread.deleted":
       case "thread.archived":
         loops.delete(event.payload.threadId);
+        managedGoals.delete(event.payload.threadId);
         return;
       case "thread.meta-updated":
         yield* threadTitleRegenerationWorker.enqueue(event);

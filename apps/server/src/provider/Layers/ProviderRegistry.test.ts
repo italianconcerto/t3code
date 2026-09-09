@@ -409,12 +409,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
           ]);
           assert.deepStrictEqual(status.slashCommands.slice(1), [
-            GOAL_SLASH_COMMAND,
             {
               name: "feedback",
               description: "Send this thread and Codex logs to OpenAI",
               input: { hint: "Describe the issue (optional)" },
             },
+            GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
           ]);
         }),
@@ -2849,6 +2849,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               description: "Review a pull request",
               input: { hint: "pr-or-branch" },
             },
+            GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
           ]);
         }).pipe(
@@ -2894,6 +2895,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               description: "Explore and refine UI",
               input: { hint: "component-or-screen" },
             },
+            GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
           ]);
         }).pipe(

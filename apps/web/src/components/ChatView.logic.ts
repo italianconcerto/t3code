@@ -4,7 +4,6 @@ import {
   type AssetCreateUrlResult,
   type ChatFileAttachment,
   type EnvironmentId,
-  isProviderDriverKind,
   ProjectId,
   type MessageId,
   type ModelSelection,
@@ -798,36 +797,6 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
   return Boolean(
     thread && (thread.latestTurn !== null || thread.messages.length > 0 || thread.session !== null),
   );
-}
-
-// Imported history has no session until its first prompt. Resolve its instance
-// through the environment's provider catalog before locking to a driver.
-export function deriveLockedProvider(input: {
-  thread: Thread | null | undefined;
-  selectedProvider: string | null;
-  threadProvider: string | null;
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
-}): ProviderDriverKind | null {
-  if (!threadHasStarted(input.thread)) {
-    return null;
-  }
-  const sessionProvider = input.thread?.session?.providerName ?? null;
-  if (sessionProvider && isProviderDriverKind(sessionProvider)) {
-    return sessionProvider;
-  }
-  // Preserve the existing lock while an instance is missing from the catalog;
-  // a started thread must not silently fall back to a different driver.
-  const threadProvider =
-    input.providers.find((provider) => provider.instanceId === input.threadProvider)?.driver ??
-    input.threadProvider;
-  const selectedProvider =
-    input.providers.find((provider) => provider.instanceId === input.selectedProvider)?.driver ??
-    input.selectedProvider;
-  const narrowedThreadProvider =
-    threadProvider && isProviderDriverKind(threadProvider) ? threadProvider : null;
-  const narrowedSelectedProvider =
-    selectedProvider && isProviderDriverKind(selectedProvider) ? selectedProvider : null;
-  return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {

@@ -399,7 +399,6 @@ import {
   type LocalDispatchSnapshot,
   PullRequestDialogState,
   cloneComposerImageForRetry,
-  deriveLockedProvider,
   readFileAsDataUrl,
   resolveFileAttachmentUrl,
   reconcileMountedTerminalThreadIds,
@@ -2308,16 +2307,9 @@ export default function ChatView(props: ChatViewProps) {
     : (primaryEnvironment?.serverConfig ?? null);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const selectedProviderByThreadId = composerActiveProvider ?? null;
-  const threadProvider =
-    activeThread?.modelSelection.instanceId ??
-    activeProjectDefaultModelSelection?.instanceId ??
-    null;
-  const lockedProvider = deriveLockedProvider({
-    thread: activeThread,
-    selectedProvider: selectedProviderByThreadId,
-    threadProvider,
-    providers: providerStatuses,
-  });
+  // Selecting another provider replaces the current provider session. The
+  // server hands the visible conversation to the replacement session.
+  const lockedProvider = null;
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
   const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
@@ -7730,32 +7722,6 @@ export default function ChatView(props: ChatViewProps) {
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
-      // Look up the configured instance so model normalization and custom
-      // model lookup stay scoped to that exact instance. Unknown instance ids
-      // are rejected by returning early; the server remains authoritative too.
-      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
-      if (
-        lockedProvider !== null &&
-        resolvedDriverKind !== null &&
-        resolvedDriverKind !== lockedProvider
-      ) {
-        scheduleComposerFocus();
-        return;
-      }
-      if (lockedProvider !== null && activeThread.session?.providerInstanceId) {
-        const currentEntry = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === activeThread.session?.providerInstanceId,
-        );
-        if (
-          currentEntry?.continuation?.groupKey &&
-          entry?.continuation?.groupKey &&
-          currentEntry.continuation.groupKey !== entry.continuation.groupKey
-        ) {
-          scheduleComposerFocus();
-          return;
-        }
-      }
       const resolvedModel = resolveAppModelSelectionForInstance(
         instanceId,
         settings,
@@ -7796,7 +7762,6 @@ export default function ChatView(props: ChatViewProps) {
     },
     [
       activeThread,
-      lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
