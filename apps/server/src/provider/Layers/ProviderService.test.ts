@@ -1134,49 +1134,57 @@ const antigravityInstanceRouting = makeProviderServiceLayer({
   },
 });
 antigravityInstanceRouting.layer("ProviderServiceLive instance-owned conversations", (it) => {
-  it.effect(
-    "does not replace a native conversation with another instance or a removed-instance fallback",
-    () =>
-      Effect.gen(function* () {
-        const provider = yield* ProviderService.ProviderService;
-        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  it.effect("replaces instance-owned conversations only without an explicit resume cursor", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
 
-        for (const originalAvailable of [true, false]) {
-          originalAntigravityInstanceAvailable = originalAvailable;
-          for (const passCursor of [true, false]) {
-            const threadId = asThreadId(
-              `thread-antigravity-instance-${originalAvailable}-${passCursor}`,
-            );
-            const resumeCursor = { sessionId: "native-session" };
-            yield* directory.upsert({
-              threadId,
-              provider: antigravityDriver,
-              providerInstanceId: originalAntigravityInstanceId,
-              status: "stopped",
-              runtimeMode: "approval-required",
-              ...(passCursor ? {} : { resumeCursor }),
-            });
-            const originalBinding = yield* directory.getBinding(threadId);
-            replacementAntigravity.startSession.mockClear();
+      for (const originalAvailable of [true, false]) {
+        originalAntigravityInstanceAvailable = originalAvailable;
+        for (const passCursor of [true, false]) {
+          const threadId = asThreadId(
+            `thread-antigravity-instance-${originalAvailable}-${passCursor}`,
+          );
+          const resumeCursor = { sessionId: "native-session" };
+          yield* directory.upsert({
+            threadId,
+            provider: antigravityDriver,
+            providerInstanceId: originalAntigravityInstanceId,
+            status: "stopped",
+            runtimeMode: "approval-required",
+            ...(passCursor ? {} : { resumeCursor }),
+          });
+          const originalBinding = yield* directory.getBinding(threadId);
+          replacementAntigravity.startSession.mockClear();
 
-            const error = yield* Effect.flip(
-              provider.startSession(threadId, {
-                providerInstanceId: replacementAntigravityInstanceId,
-                threadId,
-                runtimeMode: "approval-required",
-                ...(passCursor ? { resumeCursor } : {}),
-              }),
+          const replacementInput = {
+            providerInstanceId: replacementAntigravityInstanceId,
+            threadId,
+            runtimeMode: "approval-required" as const,
+            ...(passCursor ? { resumeCursor } : {}),
+          };
+          if (!passCursor) {
+            const replacement = yield* provider.startSession(threadId, replacementInput);
+            assert.equal(replacement.providerInstanceId, replacementAntigravityInstanceId);
+            assert.equal(replacementAntigravity.startSession.mock.calls.length, 1);
+            assert.notProperty(
+              replacementAntigravity.startSession.mock.calls[0]?.[0] ?? {},
+              "resumeCursor",
             );
-
-            assert.equal(
-              error._tag,
-              originalAvailable ? "ProviderValidationError" : "ProviderUnsupportedError",
-            );
-            assert.equal(replacementAntigravity.startSession.mock.calls.length, 0);
-            assert.deepEqual(yield* directory.getBinding(threadId), originalBinding);
+            continue;
           }
+
+          const error = yield* Effect.flip(provider.startSession(threadId, replacementInput));
+
+          assert.equal(
+            error._tag,
+            originalAvailable ? "ProviderValidationError" : "ProviderUnsupportedError",
+          );
+          assert.equal(replacementAntigravity.startSession.mock.calls.length, 0);
+          assert.deepEqual(yield* directory.getBinding(threadId), originalBinding);
         }
-      }),
+      }
+    }),
   );
 });
 
