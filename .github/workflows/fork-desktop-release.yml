@@ -59,7 +59,7 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           cp .env.example .env
 
-      - name: Build unsigned macOS release
+      - name: Build ad-hoc signed macOS release
         shell: bash
         env:
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
@@ -71,6 +71,7 @@ jobs:
             --target dmg \
             --arch arm64 \
             --build-version "${{ steps.version.outputs.version }}" \
+            --adhoc-signed \
             --verbose
 
       - name: Publish fork release
