@@ -471,6 +471,7 @@ function makeProviderServiceLayer(
     codex,
     claude,
     cursor,
+    registry,
     layer,
   };
 }
@@ -1554,6 +1555,301 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("rejects an explicit resume cursor when switching drivers", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-cross-driver-resume");
+      const original = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.claude.startSession.mockClear();
+
+      const failure = yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+          resumeCursor: original.resumeCursor,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.issue, "provider resume state is incompatible");
+      assert.equal(routing.claude.startSession.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("drops events emitted by a provider session after it is replaced", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-stale-provider-events");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const received = yield* Stream.runHead(provider.streamEvents).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const stopCodex = routing.codex.stopSession.getMockImplementation();
+      assert(stopCodex);
+      routing.codex.stopSession.mockImplementationOnce((staleThreadId) =>
+        Effect.sync(() => {
+          routing.codex.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-stale-codex-exit"),
+            provider: CODEX_DRIVER,
+            threadId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: {},
+          });
+        }).pipe(Effect.andThen(stopCodex(staleThreadId))),
+      );
+      const startClaude = routing.claude.startSession.getMockImplementation();
+      assert(startClaude);
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        Effect.sync(() => {
+          routing.codex.emit({
+            type: "runtime.error",
+            eventId: asEventId("evt-stale-codex-during-replacement-start"),
+            provider: CODEX_DRIVER,
+            threadId,
+            createdAt: "2026-01-01T00:00:01.500Z",
+            payload: { message: "stale provider error" },
+          });
+        }).pipe(Effect.andThen(startClaude(input))),
+      );
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.claude.emit({
+        type: "session.started",
+        eventId: asEventId("evt-current-claude-started"),
+        provider: CLAUDE_AGENT_DRIVER,
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: {},
+      });
+
+      const event = Option.getOrUndefined(yield* Fiber.join(received));
+      assert.equal(event?.eventId, asEventId("evt-current-claude-started"));
+      assert.equal(event?.providerInstanceId, claudeAgentInstanceId);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("fails a replacement that exits during startup without reviving it as ready", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-replacement-exits-during-start");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        Effect.sync(() => {
+          routing.claude.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-claude-exit-during-start"),
+            provider: CLAUDE_AGENT_DRIVER,
+            threadId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: { reason: "startup failed" },
+          });
+          return {
+            provider: CLAUDE_AGENT_DRIVER,
+            providerInstanceId: claudeAgentInstanceId,
+            status: "ready",
+            runtimeMode: input.runtimeMode,
+            threadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          };
+        }),
+      );
+
+      const failure = yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+
+      assert.instanceOf(failure, ProviderAdapterRequestError);
+      assert.include(failure.detail, "exited while it was starting");
+      assert.equal(binding?.providerInstanceId, codexInstanceId);
+      assert.equal(binding?.status, "stopped");
+      assert.equal(yield* routing.codex.hasSession(threadId), false);
+
+      const recovered = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(recovered.providerInstanceId, codexInstanceId);
+      assert.equal(yield* routing.codex.hasSession(threadId), true);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("stops the old session so it can recover after replacement startup fails", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-replacement-start-fails");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.claude.startSession.mockImplementationOnce(
+        () =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: CLAUDE_AGENT_DRIVER,
+              method: "startSession",
+              detail: "replacement failed",
+            }),
+          ) as never,
+      );
+
+      yield* Effect.flip(
+        provider.startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        }),
+      );
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+
+      assert.equal(binding?.providerInstanceId, codexInstanceId);
+      assert.equal(binding?.status, "stopped");
+      assert.equal(yield* routing.codex.hasSession(threadId), false);
+
+      const recovered = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(recovered.providerInstanceId, codexInstanceId);
+      assert.equal(yield* routing.codex.hasSession(threadId), true);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("cleans up a failed replacement when the old instance was removed", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-replacement-old-instance-removed");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const originalGetByInstance = routing.registry.getByInstance;
+      let oldInstanceRemoved = true;
+      const registryLookup = vi
+        .spyOn(routing.registry, "getByInstance")
+        .mockImplementation((instanceId) =>
+          oldInstanceRemoved && instanceId === codexInstanceId
+            ? Effect.fail(new ProviderUnsupportedError({ provider: CODEX_DRIVER }))
+            : originalGetByInstance(instanceId),
+        );
+      const startClaude = routing.claude.startSession.getMockImplementation();
+      assert(startClaude);
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        startClaude(input).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: CLAUDE_AGENT_DRIVER,
+                method: "startSession",
+                detail: "replacement failed after partial start",
+              }),
+            ),
+          ),
+        ),
+      );
+
+      yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip, Effect.ensuring(Effect.sync(() => registryLookup.mockRestore())));
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+
+      assert.equal(yield* routing.claude.hasSession(threadId), false);
+      assert.equal(binding?.providerInstanceId, codexInstanceId);
+      assert.equal(binding?.status, "stopped");
+
+      oldInstanceRemoved = false;
+      yield* routing.codex.stopSession(threadId);
+    }),
+  );
+
+  it.effect("allows a same-instance restart when the adapter exits its old session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-same-instance-restart");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "approval-required",
+      });
+      const startCodex = routing.codex.startSession.getMockImplementation();
+      assert(startCodex);
+      routing.codex.startSession.mockImplementationOnce((input) =>
+        Effect.sync(() => {
+          routing.codex.emit({
+            type: "session.exited",
+            eventId: asEventId("evt-old-codex-exit-during-restart"),
+            provider: CODEX_DRIVER,
+            threadId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: {},
+          });
+        }).pipe(Effect.andThen(startCodex(input))),
+      );
+
+      const restarted = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(restarted.providerInstanceId, codexInstanceId);
+      assert.equal(restarted.runtimeMode, "full-access");
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
   it.effect.each([CODEX_DRIVER, CLAUDE_AGENT_DRIVER, CURSOR_DRIVER])(
     "rejects missing, file, and saved workspace paths before starting %s",
     (driver) =>

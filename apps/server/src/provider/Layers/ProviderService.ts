@@ -483,6 +483,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const fileSystem = yield* FileSystem.FileSystem;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const currentSessionInstances = new Map<ThreadId, ProviderInstanceId>();
+  const startupSessionInstances = new Map<ThreadId, ProviderInstanceId>();
+  const exitedDuringStartup = new Set<ThreadId>();
   const pendingCompactions = new Map<ThreadId, PendingCompaction>();
   const timedOutNativeCompactions = new Set<ThreadId>();
   const settleCompaction = (threadId: ThreadId, pending: PendingCompaction, terminal: string) =>
@@ -1038,6 +1041,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const canonicalEvent = yield* Effect.sync(() =>
         correlateRuntimeEventWithInstance(source, event),
       );
+      let currentInstanceId = currentSessionInstances.get(event.threadId);
+      if (currentInstanceId === undefined) {
+        const binding = Option.getOrUndefined(
+          yield* directory.getBinding(event.threadId).pipe(Effect.orDie),
+        );
+        currentInstanceId = binding?.providerInstanceId;
+        if (currentInstanceId !== undefined) {
+          currentSessionInstances.set(event.threadId, currentInstanceId);
+        }
+      }
+      if (currentInstanceId !== undefined && currentInstanceId !== source.instanceId) {
+        return;
+      }
+      if (
+        canonicalEvent.type === "session.exited" &&
+        startupSessionInstances.get(event.threadId) === source.instanceId
+      ) {
+        exitedDuringStartup.add(event.threadId);
+        return;
+      }
       yield* increment(providerRuntimeEventsTotal, {
         provider: canonicalEvent.provider,
         eventType: canonicalEvent.type,
@@ -1358,7 +1381,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
         if (
-          persistedBinding?.provider === resolvedProvider &&
+          persistedBinding !== undefined &&
           persistedBinding.providerInstanceId !== resolvedInstanceId &&
           input.resumeCursor != null
         ) {
@@ -1423,6 +1446,79 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
         yield* prepareMcpSession(threadId, resolvedInstanceId);
+        const previousCurrentInstanceId =
+          currentSessionInstances.get(threadId) ?? persistedBinding?.providerInstanceId;
+        currentSessionInstances.set(threadId, resolvedInstanceId);
+        exitedDuringStartup.delete(threadId);
+        if (previousCurrentInstanceId !== resolvedInstanceId) {
+          startupSessionInstances.set(threadId, resolvedInstanceId);
+        } else {
+          startupSessionInstances.delete(threadId);
+        }
+        const retireSessionsAfterStartFailure = Effect.gen(function* () {
+          if (previousCurrentInstanceId === undefined) {
+            currentSessionInstances.delete(threadId);
+          } else {
+            currentSessionInstances.set(threadId, previousCurrentInstanceId);
+          }
+          startupSessionInstances.delete(threadId);
+          exitedDuringStartup.delete(threadId);
+
+          const stopAdapter = (sessionAdapter: ProviderAdapterShape<ProviderAdapterError>) =>
+            sessionAdapter.hasSession(threadId).pipe(
+              Effect.flatMap((hasSession) =>
+                hasSession ? sessionAdapter.stopSession(threadId) : Effect.void,
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.session.start-failure-stop-failed", {
+                  threadId,
+                  provider: sessionAdapter.provider,
+                  cause,
+                }),
+              ),
+            );
+
+          yield* stopAdapter(adapter);
+          if (
+            previousCurrentInstanceId !== undefined &&
+            previousCurrentInstanceId !== resolvedInstanceId
+          ) {
+            const previousAdapter = yield* registry
+              .getByInstance(previousCurrentInstanceId)
+              .pipe(Effect.option);
+            if (Option.isSome(previousAdapter)) {
+              yield* stopAdapter(previousAdapter.value);
+            }
+          }
+          if (
+            persistedBinding !== undefined &&
+            previousCurrentInstanceId === persistedBinding.providerInstanceId
+          ) {
+            yield* directory
+              .upsert({
+                ...persistedBinding,
+                status: "stopped",
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("provider.session.start-failure-persist-failed", {
+                    threadId,
+                    provider: persistedBinding.provider,
+                    cause,
+                  }),
+                ),
+              );
+          }
+          yield* clearMcpSession(threadId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.start-failure-mcp-cleanup-failed", {
+                threadId,
+                provider: adapter.provider,
+                cause,
+              }),
+            ),
+          );
+        });
         const session = yield* adapter
           .startSession({
             ...input,
@@ -1430,7 +1526,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
           })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
+          .pipe(Effect.onError(() => retireSessionsAfterStartFailure));
 
         if (session.provider !== adapter.provider) {
           yield* clearMcpSession(threadId);
@@ -1439,17 +1535,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
           );
         }
+        yield* Effect.yieldNow;
+        startupSessionInstances.delete(threadId);
+        if (exitedDuringStartup.delete(threadId)) {
+          yield* retireSessionsAfterStartFailure;
+          return yield* new ProviderAdapterRequestError({
+            provider: adapter.provider,
+            method: "startSession",
+            detail: `Provider session '${threadId}' exited while it was starting.`,
+          });
+        }
         const sessionWithInstance = {
           ...session,
           providerInstanceId: resolvedInstanceId,
         };
 
+        yield* upsertSessionBinding(sessionWithInstance, threadId, {
+          modelSelection: input.modelSelection,
+        });
+        // Publish the replacement binding before stopping the old adapter. Its
+        // exit notification may be delivered immediately; ingestion can then
+        // recognize that notification as belonging to the stale session.
         yield* stopStaleSessionsForThread({
           threadId,
           currentInstanceId: resolvedInstanceId,
-        });
-        yield* upsertSessionBinding(sessionWithInstance, threadId, {
-          modelSelection: input.modelSelection,
         });
         yield* analytics.record("provider.session.started", {
           provider: sessionWithInstance.provider,
