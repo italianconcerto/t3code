@@ -1,0 +1,85 @@
+name: Fork desktop release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-desktop-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build and publish macOS Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Cache resource monitor
+        id: resource_monitor_cache
+        uses: actions/cache@v6
+        with:
+          path: native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor
+          key: fork-resource-monitor-aarch64-apple-darwin-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
+
+      - name: Setup Rust
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - id: version
+        name: Resolve fork version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="1.0.${GITHUB_RUN_NUMBER}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          cp .env.example .env
+
+      - name: Build unsigned macOS release
+        shell: bash
+        env:
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          vp run dist:desktop:artifact \
+            --platform mac \
+            --target dmg \
+            --arch arm64 \
+            --build-version "${{ steps.version.outputs.version }}" \
+            --verbose
+
+      - name: Publish fork release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: T3 Code fork ${{ steps.version.outputs.version }}
+          body: Automated Apple Silicon build from `${{ github.sha }}`.
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/*-mac.yml
