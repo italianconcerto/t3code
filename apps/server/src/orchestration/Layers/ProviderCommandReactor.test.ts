@@ -206,6 +206,13 @@ describe("ProviderCommandReactor", () => {
     readonly unreadableHistory?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
+    readonly scheduledLoopBeforeStart?:
+      | boolean
+      | {
+          readonly awaitingCompletion: boolean;
+          readonly expectedProviderInstanceId?: ProviderInstanceId | null;
+          readonly expectedTurnId: TurnId | null;
+        };
     readonly serverActivation?: Effect.Effect<void>;
     readonly beforeReadySessionDispatch?: () => Effect.Effect<void>;
     readonly compactThreadEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
@@ -213,6 +220,10 @@ describe("ProviderCommandReactor", () => {
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly terminalBeforeSendTurnReturns?: boolean;
     readonly staleTerminalAfterEarly?: boolean;
+    readonly sendTurnEffect?: (result: {
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId;
+    }) => Effect.Effect<{ readonly threadId: ThreadId; readonly turnId: TurnId }>;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
@@ -301,6 +312,7 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-1"),
       };
+      if (input?.sendTurnEffect) return input.sendTurnEffect(result);
       if (!input?.terminalBeforeSendTurnReturns) return Effect.succeed(result);
       const requestedModelSelection =
         typeof request === "object" && request !== null && "modelSelection" in request
@@ -642,6 +654,31 @@ describe("ProviderCommandReactor", () => {
         }),
       );
     }
+    if (input?.scheduledLoopBeforeStart !== undefined) {
+      const persistedLoop =
+        typeof input.scheduledLoopBeforeStart === "object"
+          ? input.scheduledLoopBeforeStart
+          : {
+              awaitingCompletion: false,
+              expectedProviderInstanceId: null,
+              expectedTurnId: null,
+            };
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT INTO scheduled_loops (
+              thread_id, prompt, interval_ms, next_run_at, expires_at, runs,
+              awaiting_completion, expected_provider_instance_id, expected_turn_id
+            ) VALUES (
+              'thread-1', 'Recovered check', 5000, 5000, 259200000, 0,
+              ${persistedLoop.awaitingCompletion ? 1 : 0},
+              ${persistedLoop.expectedProviderInstanceId ?? null}, ${persistedLoop.expectedTurnId}
+            )
+          `;
+        }),
+      );
+    }
 
     scope = await Effect.runPromise(Scope.make("sequential"));
     await runtime.runPromise(
@@ -689,6 +726,32 @@ describe("ProviderCommandReactor", () => {
             `;
             const row = rows[0];
             return row === undefined ? undefined : { ...row, awaitingTurn: row.awaitingTurn === 1 };
+          }),
+        ),
+      readScheduledLoop: (threadId = ThreadId.make("thread-1")) =>
+        runtime!.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const rows = yield* sql<{
+              readonly threadId: string;
+              readonly nextRunAt: number;
+              readonly awaitingCompletion: number;
+              readonly expectedProviderInstanceId: string | null;
+              readonly expectedTurnId: string | null;
+            }>`
+              SELECT
+                thread_id AS "threadId",
+                next_run_at AS "nextRunAt",
+                awaiting_completion AS "awaitingCompletion",
+                expected_provider_instance_id AS "expectedProviderInstanceId",
+                expected_turn_id AS "expectedTurnId"
+              FROM scheduled_loops
+              WHERE thread_id = ${threadId}
+            `;
+            const row = rows[0];
+            return row === undefined
+              ? undefined
+              : { ...row, awaitingCompletion: row.awaitingCompletion === 1 };
           }),
         ),
       dropManagedGoalsTable: () =>
@@ -1420,6 +1483,198 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).toHaveBeenCalledTimes(runs);
   });
 
+  it("recovers a persisted loop when the reactor starts", async () => {
+    const harness = await createHarness({ testClock: true, scheduledLoopBeforeStart: true });
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ input: "Recovered check" }),
+    );
+  });
+
+  it("reschedules a recovered in-flight loop when its turn completes", async () => {
+    const harness = await createHarness({
+      testClock: true,
+      scheduledLoopBeforeStart: {
+        awaitingCompletion: true,
+        expectedProviderInstanceId: ProviderInstanceId.make("codex"),
+        expectedTurnId: asTurnId("turn-1"),
+      },
+    });
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("recovered-loop-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({
+      nextRunAt: 6_000,
+      awaitingCompletion: false,
+      expectedProviderInstanceId: null,
+      expectedTurnId: null,
+    });
+  });
+
+  it("does not complete a recovered loop from another provider instance", async () => {
+    const harness = await createHarness({
+      testClock: true,
+      scheduledLoopBeforeStart: {
+        awaitingCompletion: true,
+        expectedProviderInstanceId: ProviderInstanceId.make("codex"),
+        expectedTurnId: asTurnId("turn-1"),
+      },
+    });
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("wrong-provider-loop-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({
+      nextRunAt: 5_000,
+      awaitingCompletion: true,
+      expectedProviderInstanceId: "codex",
+      expectedTurnId: "turn-1",
+    });
+  });
+
+  it("waits a full interval before retrying a recovered loop with a lost terminal", async () => {
+    const harness = await createHarness({
+      testClock: true,
+      scheduledLoopBeforeStart: {
+        awaitingCompletion: true,
+        expectedProviderInstanceId: null,
+        expectedTurnId: null,
+      },
+    });
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readScheduledLoop()).toMatchObject({
+      nextRunAt: 10_000,
+      awaitingCompletion: false,
+    });
+
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledOnce();
+  });
+
+  it("clears in-flight state when preparing a loop turn fails", async () => {
+    const harness = await createHarness({ testClock: true, unreadableHistory: true });
+    await dispatchAutomation(harness, "/loop 1s Check CI", "loop-before-prepare-failure");
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readScheduledLoop()).toMatchObject({
+      nextRunAt: 2_000,
+      awaitingCompletion: false,
+      expectedProviderInstanceId: null,
+      expectedTurnId: null,
+    });
+  });
+
+  it("keeps a scheduled loop after the thread is settled", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/loop 5s Check CI", "loop-before-settle");
+    await harness.drain();
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("settle-with-loop"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({ threadId: "thread-1" });
+
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: "Check CI" }));
+  });
+
+  it("starts the next loop interval after the current turn completes", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/loop 5s Check CI", "loop-after-settle");
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledOnce();
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("loop-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      payload: {
+        state: "completed",
+        tokenUsage: {
+          usageStatus: "complete",
+          usageScope: "main_agent",
+          hasSubagents: false,
+          inputTokens: 1,
+          outputTokens: 1,
+        },
+      },
+    });
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({ nextRunAt: 11_000 });
+
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("loop-turn-completed-duplicate"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:07.000Z",
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({ nextRunAt: 11_000 });
+  });
+
+  it("ignores stale loop terminal events after replacing a schedule", async () => {
+    const releaseSendTurn = Effect.runSync(Deferred.make<void>());
+    const harness = await createHarness({
+      testClock: true,
+      sendTurnEffect: (result) => Deferred.await(releaseSendTurn).pipe(Effect.as(result)),
+    });
+    await dispatchAutomation(harness, "/loop 5s Old", "loop-before-replace");
+    await harness.runEffect(TestClock.adjust("5 seconds"));
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await dispatchAutomation(harness, "/loop 10s New", "loop-replaced");
+    await harness.runEffect(Deferred.succeed(releaseSendTurn, undefined));
+    await harness.runEffect(TestClock.adjust("1 second"));
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("stale-loop-terminal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(await harness.readScheduledLoop()).toMatchObject({ nextRunAt: 15_000 });
+  });
+
   it("defers loops while awaiting input, replaces schedules, and stops when archived", async () => {
     const harness = await createHarness({ testClock: true });
     await dispatchAutomation(harness, "/loop 5s Old prompt", "old-loop");
@@ -1444,6 +1699,11 @@ describe("ProviderCommandReactor", () => {
     await harness.runEffect(TestClock.adjust("10 seconds"));
     await harness.drain();
     expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
+      expect.objectContaining({
+        summary: "Loop is due and waiting for the current turn or request to finish.",
+      }),
+    );
     await dispatchAutomation(harness, "/loop status", "loop-status");
     expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
       expect.objectContaining({

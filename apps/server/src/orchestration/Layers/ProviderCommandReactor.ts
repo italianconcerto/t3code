@@ -60,6 +60,7 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as ManagedGoals from "../../persistence/ManagedGoals.ts";
+import * as ScheduledLoops from "../../persistence/ScheduledLoops.ts";
 import {
   parseAutomationCommand,
   claimLoopRun,
@@ -67,6 +68,12 @@ import {
   MAX_ACTIVE_LOOPS,
   type ScheduledLoop,
 } from "../automationCommands.ts";
+
+type ActiveScheduledLoop = ScheduledLoop & {
+  readonly awaitingCompletion: boolean;
+  readonly expectedProviderInstanceId: ProviderInstanceId | null;
+  readonly expectedTurnId: TurnId | null;
+};
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -396,6 +403,7 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
   const managedGoalRepository = yield* ManagedGoals.ManagedGoalRepository;
+  const scheduledLoopRepository = yield* ScheduledLoops.ScheduledLoopRepository;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -415,10 +423,78 @@ const make = Effect.gen(function* () {
   const threadModelSelections = new Map<string, ModelSelection>();
   const compactingThreadIds = new Set<ThreadId>();
   const stoppingThreadIds = new Set<ThreadId>();
-  const loops = new Map<ThreadId, ScheduledLoop>();
-  const earlyGoalTerminalEvents = new Map<ThreadId, Map<string, GoalTerminalEvent>>();
+  const loops = new Map<ThreadId, ActiveScheduledLoop>();
+  const loopWaitingNotified = new Set<ThreadId>();
+  const loopPendingMessages = new Map<
+    MessageId,
+    { readonly threadId: ThreadId; readonly generation: number }
+  >();
+  const loopGenerations = new Map<ThreadId, number>();
+  const loopStartingThreadIds = new Set<ThreadId>();
+  const recoveredAwaitingLoopThreadIds = new Set<ThreadId>();
+  const earlyLoopTerminalEvents = new Map<ThreadId, Map<string, GoalTerminalEvent>>();
+  const clearLoopTurnState = (threadId: ThreadId) => {
+    loopGenerations.set(threadId, (loopGenerations.get(threadId) ?? 0) + 1);
+    for (const [messageId, pending] of loopPendingMessages) {
+      if (pending.threadId === threadId) loopPendingMessages.delete(messageId);
+    }
+    loopStartingThreadIds.delete(threadId);
+    recoveredAwaitingLoopThreadIds.delete(threadId);
+    earlyLoopTerminalEvents.delete(threadId);
+  };
+  const persistLoop = (threadId: ThreadId, loop: ActiveScheduledLoop) =>
+    scheduledLoopRepository.upsert({ threadId, ...loop });
+  const deleteLoop = Effect.fn("deleteLoop")(function* (threadId: ThreadId) {
+    yield* scheduledLoopRepository.delete(threadId);
+    loops.delete(threadId);
+    loopWaitingNotified.delete(threadId);
+    clearLoopTurnState(threadId);
+    loopGenerations.delete(threadId);
+  });
   const goalTerminalKey = (event: GoalTerminalEvent) =>
     `${event.providerInstanceId}\0${event.turnId}`;
+  const recordEarlyLoopTerminal = (event: GoalTerminalEvent) => {
+    const buffered = earlyLoopTerminalEvents.get(event.threadId) ?? new Map();
+    buffered.set(goalTerminalKey(event), event);
+    earlyLoopTerminalEvents.set(event.threadId, buffered);
+  };
+  const takeEarlyLoopTerminal = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    turnId: TurnId,
+  ) => {
+    const buffered = earlyLoopTerminalEvents.get(threadId);
+    const event = buffered?.get(`${providerInstanceId}\0${turnId}`);
+    earlyLoopTerminalEvents.delete(threadId);
+    return event;
+  };
+  const rescheduleLoopAfterTerminal = Effect.fn("rescheduleLoopAfterTerminal")(function* (
+    event: GoalTerminalEvent,
+  ) {
+    const loop = loops.get(event.threadId);
+    if (
+      !loop?.awaitingCompletion ||
+      (loop.expectedTurnId !== event.turnId &&
+        !(recoveredAwaitingLoopThreadIds.has(event.threadId) && loop.expectedTurnId === null)) ||
+      (loop.expectedProviderInstanceId !== null &&
+        loop.expectedProviderInstanceId !== event.providerInstanceId)
+    ) {
+      return;
+    }
+    const completedAt = DateTime.toEpochMillis(yield* DateTime.now);
+    const rescheduledLoop = {
+      ...loop,
+      nextRunAt: completedAt + loop.intervalMs,
+      awaitingCompletion: false,
+      expectedProviderInstanceId: null,
+      expectedTurnId: null,
+    } satisfies ActiveScheduledLoop;
+    yield* persistLoop(event.threadId, rescheduledLoop);
+    loops.set(event.threadId, rescheduledLoop);
+    recoveredAwaitingLoopThreadIds.delete(event.threadId);
+    loopWaitingNotified.delete(event.threadId);
+  });
+  const earlyGoalTerminalEvents = new Map<ThreadId, Map<string, GoalTerminalEvent>>();
   const recordEarlyGoalTerminal = (event: GoalTerminalEvent) => {
     const buffered = earlyGoalTerminalEvents.get(event.threadId) ?? new Map();
     buffered.set(goalTerminalKey(event), event);
@@ -1293,6 +1369,18 @@ const make = Effect.gen(function* () {
     event: ProviderRuntimeEvent,
   ) {
     if (event.type !== "turn.completed" && event.type !== "turn.aborted") return;
+    const loop = loops.get(event.threadId);
+    const terminalMatchesLoop =
+      loop?.awaitingCompletion === true &&
+      (loop.expectedTurnId === event.turnId ||
+        (recoveredAwaitingLoopThreadIds.has(event.threadId) && loop.expectedTurnId === null)) &&
+      (loop.expectedProviderInstanceId === null ||
+        loop.expectedProviderInstanceId === event.providerInstanceId);
+    if (terminalMatchesLoop) {
+      yield* rescheduleLoopAfterTerminal(event);
+    } else if (loopStartingThreadIds.has(event.threadId)) {
+      recordEarlyLoopTerminal(event);
+    }
     const existing = Option.getOrUndefined(yield* managedGoalRepository.get(event.threadId));
     if (!existing) return;
     if (
@@ -1426,13 +1514,8 @@ const make = Effect.gen(function* () {
     for (const [threadId, loop] of loops) {
       if (now < loop.nextRunAt && now < loop.expiresAt) continue;
       const thread = yield* resolveThreadShell(threadId);
-      if (
-        !thread ||
-        thread.archivedAt !== null ||
-        thread.settledOverride === "settled" ||
-        now >= loop.expiresAt
-      ) {
-        loops.delete(threadId);
+      if (!thread || thread.archivedAt !== null || now >= loop.expiresAt) {
+        yield* deleteLoop(threadId);
         if (thread) yield* appendAutomationResult(threadId, "Loop stopped or expired.");
         continue;
       }
@@ -1444,15 +1527,60 @@ const make = Effect.gen(function* () {
         thread.backgroundLiveness != null ||
         compactingThreadIds.has(threadId) ||
         stoppingThreadIds.has(threadId);
-      if (!claimLoopRun(loop, now, busy)) continue;
+      if (busy) {
+        const deferredLoop = {
+          ...loop,
+          nextRunAt: now + loop.intervalMs,
+        } satisfies ActiveScheduledLoop;
+        yield* persistLoop(threadId, deferredLoop);
+        loops.set(threadId, deferredLoop);
+        if (!loopWaitingNotified.has(threadId)) {
+          loopWaitingNotified.add(threadId);
+          yield* appendAutomationResult(
+            threadId,
+            "Loop is due and waiting for the current turn or request to finish.",
+          );
+        }
+        continue;
+      }
+      if (loop.awaitingCompletion) {
+        const recoveredLoop = {
+          ...loop,
+          nextRunAt: now + loop.intervalMs,
+          awaitingCompletion: false,
+          expectedProviderInstanceId: null,
+          expectedTurnId: null,
+        } satisfies ActiveScheduledLoop;
+        yield* persistLoop(threadId, recoveredLoop);
+        loops.set(threadId, recoveredLoop);
+        recoveredAwaitingLoopThreadIds.delete(threadId);
+        loopWaitingNotified.delete(threadId);
+        continue;
+      }
+      const claimedLoop = {
+        ...loop,
+        awaitingCompletion: true,
+        expectedProviderInstanceId: null,
+        expectedTurnId: null,
+      } satisfies ActiveScheduledLoop;
+      if (!claimLoopRun(claimedLoop, now, false)) continue;
+      yield* persistLoop(threadId, claimedLoop);
+      loops.set(threadId, claimedLoop);
+      loopWaitingNotified.delete(threadId);
       const createdAt = DateTime.formatIso(DateTime.makeUnsafe(now));
+      const messageId = MessageId.make(yield* crypto.randomUUIDv4);
+      loopPendingMessages.set(messageId, {
+        threadId,
+        generation: loopGenerations.get(threadId) ?? 0,
+      });
+      loopStartingThreadIds.add(threadId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.turn.start",
           commandId: yield* serverCommandId("loop-turn"),
           threadId,
           message: {
-            messageId: MessageId.make(yield* crypto.randomUUIDv4),
+            messageId,
             role: "user",
             text: loop.prompt,
             attachments: [],
@@ -1464,15 +1592,20 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.catchCause((cause) => {
-            loops.delete(threadId);
-            return appendProviderFailureActivity({
-              threadId,
-              kind: "provider.turn.start.failed",
-              summary: "Loop stopped after dispatch failure",
-              detail: formatFailureDetail(cause),
-              turnId: null,
-              createdAt,
-            });
+            loopPendingMessages.delete(messageId);
+            clearLoopTurnState(threadId);
+            return deleteLoop(threadId).pipe(
+              Effect.andThen(
+                appendProviderFailureActivity({
+                  threadId,
+                  kind: "provider.turn.start.failed",
+                  summary: "Loop stopped after dispatch failure",
+                  detail: formatFailureDetail(cause),
+                  turnId: null,
+                  createdAt,
+                }),
+              ),
+            );
           }),
         );
     }
@@ -1523,7 +1656,6 @@ const make = Effect.gen(function* () {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
-      loops.delete(thread.id);
       const detail = formatFailureDetail(cause);
       return managedGoalRepository.get(thread.id).pipe(
         Effect.flatMap((goal) =>
@@ -1609,7 +1741,6 @@ const make = Effect.gen(function* () {
       return true;
     }).pipe(Effect.catchCause((cause) => recoverTurnStartFailure(cause).pipe(Effect.as(true))));
     if (authCommandHandled) {
-      loops.delete(thread.id);
       return;
     }
 
@@ -1634,20 +1765,28 @@ const make = Effect.gen(function* () {
             return;
           }
           const now = DateTime.toEpochMillis(yield* DateTime.now);
-          loops.set(thread.id, {
+          const scheduledLoop = {
             prompt: automation.prompt,
             intervalMs: automation.intervalMs,
             nextRunAt: now + automation.intervalMs,
             expiresAt: now + LOOP_LIFETIME_MS,
             runs: 0,
-          });
+            awaitingCompletion: false,
+            expectedProviderInstanceId: null,
+            expectedTurnId: null,
+          } satisfies ActiveScheduledLoop;
+          yield* persistLoop(thread.id, scheduledLoop);
+          loops.set(thread.id, scheduledLoop);
+          loopWaitingNotified.delete(thread.id);
+          clearLoopTurnState(thread.id);
           yield* appendAutomationResult(
             thread.id,
-            `Loop scheduled every ${automation.intervalMs / 1000}s: ${automation.prompt}. Expires in 3 days; stops when the server restarts. Use /loop stop to cancel.`,
+            `Loop scheduled every ${automation.intervalMs / 1000}s: ${automation.prompt}. Expires in 3 days and survives server restarts. Use /loop stop to cancel.`,
             message.id,
           );
         } else if (automation.action === "stop") {
-          const stopped = loops.delete(thread.id);
+          const stopped = loops.has(thread.id);
+          yield* deleteLoop(thread.id);
           yield* appendAutomationResult(
             thread.id,
             stopped
@@ -1657,10 +1796,13 @@ const make = Effect.gen(function* () {
           );
         } else {
           const loop = loops.get(thread.id);
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          const waiting =
+            loop && now >= loop.nextRunAt ? " • due; waiting for current work to finish" : "";
           yield* appendAutomationResult(
             thread.id,
             loop
-              ? `Loop: ${loop.prompt} • every ${loop.intervalMs / 1000}s • ${loop.runs} runs • next ${DateTime.formatIso(DateTime.makeUnsafe(loop.nextRunAt))} • expires ${DateTime.formatIso(DateTime.makeUnsafe(loop.expiresAt))}`
+              ? `Loop: ${loop.prompt} • every ${loop.intervalMs / 1000}s • ${loop.runs} runs • next ${DateTime.formatIso(DateTime.makeUnsafe(loop.nextRunAt))}${waiting} • expires ${DateTime.formatIso(DateTime.makeUnsafe(loop.expiresAt))}`
               : "No active loop.",
             message.id,
           );
@@ -1903,12 +2045,62 @@ const make = Effect.gen(function* () {
     );
 
     if (Option.isNone(sendTurnRequest)) {
+      const pendingLoop = loopPendingMessages.get(message.id);
+      if (
+        pendingLoop !== undefined &&
+        pendingLoop.generation === loopGenerations.get(event.payload.threadId)
+      ) {
+        const loop = loops.get(event.payload.threadId);
+        clearLoopTurnState(event.payload.threadId);
+        if (loop?.awaitingCompletion === true) {
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          const retryLoop = {
+            ...loop,
+            nextRunAt: now + loop.intervalMs,
+            awaitingCompletion: false,
+            expectedProviderInstanceId: null,
+            expectedTurnId: null,
+          } satisfies ActiveScheduledLoop;
+          yield* persistLoop(event.payload.threadId, retryLoop);
+          loops.set(event.payload.threadId, retryLoop);
+        }
+      }
       return;
     }
 
     yield* providerService.sendTurn(sendTurnRequest.value).pipe(
       Effect.tap(({ turnId }) =>
         Effect.gen(function* () {
+          const pendingLoop = loopPendingMessages.get(message.id);
+          loopPendingMessages.delete(message.id);
+          if (
+            pendingLoop !== undefined &&
+            pendingLoop.generation === loopGenerations.get(event.payload.threadId) &&
+            loops.has(event.payload.threadId)
+          ) {
+            loopStartingThreadIds.delete(event.payload.threadId);
+            const loop = loops.get(event.payload.threadId);
+            if (loop?.awaitingCompletion === true) {
+              const correlatedLoop = {
+                ...loop,
+                expectedProviderInstanceId:
+                  sendTurnRequest.value.modelSelection?.instanceId ??
+                  thread.modelSelection.instanceId,
+                expectedTurnId: turnId,
+              };
+              yield* persistLoop(event.payload.threadId, correlatedLoop);
+              loops.set(event.payload.threadId, correlatedLoop);
+              const earlyLoopTerminal = takeEarlyLoopTerminal(
+                event.payload.threadId,
+                sendTurnRequest.value.modelSelection?.instanceId ??
+                  thread.modelSelection.instanceId,
+                turnId,
+              );
+              if (earlyLoopTerminal !== undefined) {
+                yield* rescheduleLoopAfterTerminal(earlyLoopTerminal);
+              }
+            }
+          }
           const goal = yield* managedGoalRepository.get(event.payload.threadId);
           if (!Option.isSome(goal) || goal.value.status !== "active" || !goal.value.awaitingTurn) {
             return;
@@ -1946,7 +2138,12 @@ const make = Effect.gen(function* () {
         ),
       ),
       Effect.asVoid,
-      Effect.catchCause(recoverTurnStartFailure),
+      Effect.catchCause((cause) => {
+        if (loopPendingMessages.delete(message.id)) {
+          clearLoopTurnState(event.payload.threadId);
+        }
+        return recoverTurnStartFailure(cause);
+      }),
       Effect.forkScoped,
     );
   });
@@ -1958,7 +2155,6 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-    loops.delete(thread.id);
     const session = thread.session;
     if (!session || session.status === "stopped") {
       return yield* appendProviderFailureActivity({
@@ -2216,7 +2412,7 @@ const make = Effect.gen(function* () {
     switch (event.type) {
       case "thread.deleted":
       case "thread.archived":
-        loops.delete(event.payload.threadId);
+        yield* deleteLoop(event.payload.threadId);
         earlyGoalTerminalEvents.delete(event.payload.threadId);
         yield* managedGoalRepository.delete(event.payload.threadId);
         return;
@@ -2249,7 +2445,6 @@ const make = Effect.gen(function* () {
         yield* processUserInputResponseRequested(event);
         return;
       case "thread.session-stop-requested":
-        loops.delete(event.payload.threadId);
         yield* managedGoalRepository.get(event.payload.threadId).pipe(
           Effect.flatMap((goal) =>
             Option.isSome(goal) && goal.value.status === "active"
@@ -2265,7 +2460,6 @@ const make = Effect.gen(function* () {
         yield* processSessionStopRequested(event);
         return;
       case "thread.settled": {
-        loops.delete(event.payload.threadId);
         const thread = yield* projectionSnapshotQuery.getThreadShellById(event.payload.threadId);
         if (
           Option.isNone(thread) ||
@@ -2332,6 +2526,35 @@ const make = Effect.gen(function* () {
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const recoveryNow = DateTime.toEpochMillis(yield* DateTime.now);
+    yield* scheduledLoopRepository.list().pipe(
+      Effect.flatMap((scheduledLoops) =>
+        Effect.forEach(
+          scheduledLoops,
+          (loop) => {
+            if (loop.expiresAt <= recoveryNow) {
+              return scheduledLoopRepository.delete(loop.threadId);
+            }
+            loops.set(loop.threadId, {
+              prompt: loop.prompt,
+              intervalMs: loop.intervalMs,
+              nextRunAt: loop.nextRunAt,
+              expiresAt: loop.expiresAt,
+              runs: loop.runs,
+              awaitingCompletion: loop.awaitingCompletion,
+              expectedProviderInstanceId: loop.expectedProviderInstanceId,
+              expectedTurnId: loop.expectedTurnId,
+            });
+            loopGenerations.set(loop.threadId, 0);
+            if (loop.awaitingCompletion) recoveredAwaitingLoopThreadIds.add(loop.threadId);
+            return Effect.void;
+          },
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to recover scheduled loops", { cause: Cause.pretty(cause) }),
+      ),
+    );
     yield* managedGoalRepository.listActive().pipe(
       Effect.flatMap((goals) =>
         Effect.forEach(

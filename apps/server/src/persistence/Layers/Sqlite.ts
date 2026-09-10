@@ -7,6 +7,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { runMigrations } from "../Migrations.ts";
 import * as ManagedGoals from "../ManagedGoals.ts";
+import * as ScheduledLoops from "../ScheduledLoops.ts";
 import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
@@ -59,10 +60,10 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
       },
     }),
   );
-  return ManagedGoals.layer.pipe(Layer.provideMerge(sqlite));
+  return Layer.merge(ManagedGoals.layer, ScheduledLoops.layer).pipe(Layer.provideMerge(sqlite));
 }, Layer.unwrap);
 
-export const SqlitePersistenceMemory = ManagedGoals.layer.pipe(
+export const SqlitePersistenceMemory = Layer.merge(ManagedGoals.layer, ScheduledLoops.layer).pipe(
   Layer.provideMerge(Layer.provideMerge(setup, makeRuntimeSqliteLayer({ filename: ":memory:" }))),
 );
 
