@@ -7,6 +7,7 @@ import {
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  OpenRouterSettings,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
@@ -19,6 +20,30 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeOpenRouterSettings = Schema.decodeUnknownSync(OpenRouterSettings);
+
+describe("OpenRouter settings", () => {
+  it("defaults disabled with an OpenCode runtime", () => {
+    expect(decodeOpenRouterSettings({})).toMatchObject({
+      enabled: false,
+      binaryPath: "opencode",
+      serverUrl: "",
+      customModels: [],
+    });
+  });
+
+  it("round-trips through legacy provider settings and patches", () => {
+    const settings = decodeServerSettings({
+      providers: { openrouter: { enabled: true, binaryPath: " /opt/opencode " } },
+    });
+    expect(settings.providers.openrouter.enabled).toBe(true);
+    expect(settings.providers.openrouter.binaryPath).toBe("/opt/opencode");
+    expect(
+      decodeServerSettingsPatch({ providers: { openrouter: { serverUrl: " http://host " } } })
+        .providers?.openrouter?.serverUrl,
+    ).toBe("http://host");
+  });
+});
 
 describe("ServerSettings usage price overrides", () => {
   const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };

@@ -32,6 +32,22 @@ const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   showInteractionModeToggle: false,
 } as const;
+
+export interface OpenCodeProviderProfile {
+  readonly displayName: string;
+  readonly upstreamProviderId?: string;
+  readonly authType?: string;
+}
+
+const DEFAULT_PROFILE: OpenCodeProviderProfile = {
+  displayName: OPENCODE_PRESENTATION.displayName,
+  authType: "opencode",
+};
+
+const presentationForProfile = (profile: OpenCodeProviderProfile) => ({
+  ...OPENCODE_PRESENTATION,
+  displayName: profile.displayName,
+});
 const OPENCODE_VERSION_PROBE_TIMEOUT = "4 seconds";
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
@@ -254,11 +270,17 @@ function openCodeCapabilitiesForModel(input: {
   });
 }
 
-function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerProviderModel> {
+function flattenOpenCodeModels(
+  input: OpenCodeInventory,
+  upstreamProviderId?: string,
+): ReadonlyArray<ServerProviderModel> {
   const connected = new Set(input.providerList.connected);
   const models: Array<ServerProviderModel> = [];
 
   for (const provider of input.providerList.all) {
+    if (upstreamProviderId !== undefined && provider.id !== upstreamProviderId) {
+      continue;
+    }
     if (!connected.has(provider.id)) {
       continue;
     }
@@ -317,6 +339,7 @@ export function openCodeSkillsToServerProviderSkills(
 
 export const makePendingOpenCodeProvider = (
   openCodeSettings: OpenCodeSettings,
+  profile: OpenCodeProviderProfile = DEFAULT_PROFILE,
 ): Effect.Effect<ServerProviderDraft> =>
   Effect.gen(function* () {
     const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
@@ -328,7 +351,7 @@ export const makePendingOpenCodeProvider = (
 
     if (!openCodeSettings.enabled) {
       return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
+        presentation: presentationForProfile(profile),
         enabled: false,
         checkedAt,
         models,
@@ -346,7 +369,7 @@ export const makePendingOpenCodeProvider = (
     }
 
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: presentationForProfile(profile),
       enabled: true,
       checkedAt,
       models,
@@ -364,6 +387,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   openCodeSettings: OpenCodeSettings,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
+  profile: OpenCodeProviderProfile = DEFAULT_PROFILE,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -373,7 +397,12 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const customModels = openCodeSettings.customModels;
+  const customModels = profile.upstreamProviderId
+    ? openCodeSettings.customModels.filter((entry) => {
+        const slug = typeof entry === "string" ? entry : entry.slug;
+        return slug.trim().startsWith(`${profile.upstreamProviderId}/`);
+      })
+    : openCodeSettings.customModels;
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
 
   const fallback = (
@@ -388,7 +417,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       serverUrl: openCodeSettings.serverUrl,
     });
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: presentationForProfile(profile),
       enabled: openCodeSettings.enabled,
       checkedAt,
       models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -404,7 +433,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
 
   if (!openCodeSettings.enabled) {
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: presentationForProfile(profile),
       enabled: false,
       checkedAt,
       models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -459,7 +488,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     }
     if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
       return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
+        presentation: presentationForProfile(profile),
         enabled: openCodeSettings.enabled,
         checkedAt,
         models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -514,14 +543,18 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   version = inventoryExit.value.version;
 
   const models = providerModelsFromSettings(
-    flattenOpenCodeModels(inventoryExit.value.inventory),
+    flattenOpenCodeModels(inventoryExit.value.inventory, profile.upstreamProviderId),
     customModels,
     DEFAULT_OPENCODE_MODEL_CAPABILITIES,
   );
   const skills = openCodeSkillsToServerProviderSkills(inventoryExit.value.inventory.skills);
-  const connectedCount = inventoryExit.value.inventory.providerList.connected.length;
+  const connectedCount = profile.upstreamProviderId
+    ? Number(
+        inventoryExit.value.inventory.providerList.connected.includes(profile.upstreamProviderId),
+      )
+    : inventoryExit.value.inventory.providerList.connected.length;
   return buildServerProvider({
-    presentation: OPENCODE_PRESENTATION,
+    presentation: presentationForProfile(profile),
     enabled: true,
     checkedAt,
     models,
@@ -533,11 +566,13 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       status: connectedCount > 0 ? "ready" : "warning",
       auth: {
         status: connectedCount > 0 ? "authenticated" : "unknown",
-        type: "opencode",
+        type: profile.authType ?? "opencode",
       },
       message:
         connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
+          ? profile.upstreamProviderId
+            ? `${profile.displayName} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
+            : `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
           : isExternalServer
             ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
             : "OpenCode is available, but it did not report any connected upstream providers.",

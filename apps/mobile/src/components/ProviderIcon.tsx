@@ -73,6 +73,20 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
+  if (props.provider === "openrouter") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M3 7h10.5a4.5 4.5 0 0 1 4.5 4.5V14m0 0-3-3m3 3 3-3M21 17H10.5A4.5 4.5 0 0 1 6 12.5V10m0 0 3 3m-3-3-3 3"
+          stroke={mono}
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </Svg>
+    );
+  }
+
   // codex (and unknown drivers)
   return (
     <Svg width={size} height={size} viewBox="0 0 256 260" fill="none">

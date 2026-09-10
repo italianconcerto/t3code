@@ -19,6 +19,7 @@ import {
 } from "../opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
+import type { OpenCodeProviderProfile } from "./OpenCodeProvider.ts";
 import type { OpenCodeInventory } from "../opencodeRuntime.ts";
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
@@ -182,6 +183,7 @@ const checkProvider = Effect.fn("checkProvider")(function* (
   settings: OpenCodeSettings,
   cwd = process.cwd(),
   environment?: NodeJS.ProcessEnv,
+  profile?: OpenCodeProviderProfile,
 ) {
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -191,7 +193,7 @@ const checkProvider = Effect.fn("checkProvider")(function* (
         ...(settings.serverPassword ? { serverPassword: settings.serverPassword } : {}),
         ...(environment ? { environment } : {}),
       });
-      return yield* checkOpenCodeProviderStatus(settings, cwd, environment).pipe(
+      return yield* checkOpenCodeProviderStatus(settings, cwd, environment, profile).pipe(
         Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       );
     }),
@@ -420,6 +422,53 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         snapshot.message,
         "Failed to load OpenCode provider inventory: opencode models failed",
       );
+    }),
+  );
+
+  it.effect("scopes an OpenRouter profile to OpenRouter models and authentication", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai", "openrouter"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: { direct: { id: "direct", name: "Direct model" } },
+            },
+            {
+              id: "openrouter",
+              name: "OpenRouter",
+              models: { auto: { id: "auto", name: "Auto" } },
+            },
+          ],
+          default: {},
+        },
+        agents: [],
+        skills: [],
+      };
+
+      const snapshot = yield* checkProvider(
+        makeOpenCodeSettings({ customModels: ["openai/hidden", "openrouter/custom"] }),
+        process.cwd(),
+        undefined,
+        {
+          displayName: "OpenRouter",
+          upstreamProviderId: "openrouter",
+          authType: "api-key",
+        },
+      );
+
+      NodeAssert.equal(snapshot.displayName, "OpenRouter");
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.equal(snapshot.auth.status, "authenticated");
+      NodeAssert.equal(snapshot.auth.type, "api-key");
+      NodeAssert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["openrouter/auto", "openrouter/custom"],
+      );
+      NodeAssert.ok(snapshot.slashCommands.some((command) => command.name === "goal"));
+      NodeAssert.ok(snapshot.slashCommands.some((command) => command.name === "loop"));
     }),
   );
 });
