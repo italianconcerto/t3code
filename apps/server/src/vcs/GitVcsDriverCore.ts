@@ -21,6 +21,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitCommandError,
+  VCS_SWITCH_LOCAL_CHANGES_ERROR,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewSource,
@@ -3247,27 +3248,85 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             ).pipe(Effect.map((result) => result.exitCode === 0))
           : false;
 
-      const checkoutArgs = localInputExists
-        ? ["checkout", input.refName]
+      const checkoutTargetArgs = localInputExists
+        ? [input.refName]
         : remoteExists && !localTrackingBranch && localTrackedBranchTargetExists
-          ? ["checkout", input.refName]
+          ? [input.refName]
           : remoteExists && !localTrackingBranch
-            ? ["checkout", "--track", input.refName]
+            ? ["--track", input.refName]
             : remoteExists && localTrackingBranch
-              ? ["checkout", localTrackingBranch]
-              : ["checkout", input.refName];
+              ? [localTrackingBranch]
+              : [input.refName];
 
-      yield* executeGit("GitVcsDriver.switchRef.checkout", input.cwd, checkoutArgs, {
-        timeoutMs: 10_000,
-        fallbackErrorDetail: "git checkout failed",
-      });
+      if (input.mergeLocalChanges) {
+        const stagedChanges = yield* executeGitWithStableDiagnostics(
+          "GitVcsDriver.switchRef.stagedChanges",
+          input.cwd,
+          ["diff", "--cached", "--quiet", "--"],
+          { timeoutMs: 5_000, allowNonZeroExit: true },
+        );
+        if (stagedChanges.exitCode !== 0) {
+          return yield* new GitCommandError({
+            ...gitCommandContext({
+              operation: "GitVcsDriver.switchRef.checkout",
+              cwd: input.cwd,
+              args: ["checkout", "--merge", ...checkoutTargetArgs],
+            }),
+            detail:
+              "Switch and merge is unavailable while changes are staged. Commit or unstage them first.",
+            ...(stagedChanges.exitCode === null ? {} : { exitCode: stagedChanges.exitCode }),
+          });
+        }
+      }
+
+      const checkoutArgs = [
+        "checkout",
+        ...(input.mergeLocalChanges ? ["--merge"] : []),
+        ...checkoutTargetArgs,
+      ];
+
+      const checkout = yield* executeGitWithStableDiagnostics(
+        "GitVcsDriver.switchRef.checkout",
+        input.cwd,
+        checkoutArgs,
+        {
+          timeoutMs: 10_000,
+          allowNonZeroExit: true,
+        },
+      );
+      if (checkout.exitCode !== 0) {
+        const localChangesWouldBeOverwritten = checkout.stderr.includes(
+          "Your local changes to the following files would be overwritten by checkout:",
+        );
+        return yield* new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.switchRef.checkout",
+            cwd: input.cwd,
+            args: checkoutArgs,
+          }),
+          detail: localChangesWouldBeOverwritten
+            ? VCS_SWITCH_LOCAL_CHANGES_ERROR
+            : "git checkout failed",
+          ...(checkout.exitCode === null ? {} : { exitCode: checkout.exitCode }),
+          stdoutLength: checkout.stdout.length,
+          stderrLength: checkout.stderr.length,
+        });
+      }
 
       const refName = yield* runGitStdout("GitVcsDriver.switchRef.currentBranch", input.cwd, [
         "branch",
         "--show-current",
       ]).pipe(Effect.map((stdout) => stdout.trim() || null));
 
-      return { refName };
+      const hasConflicts = input.mergeLocalChanges
+        ? yield* runGitStdout("GitVcsDriver.switchRef.conflicts", input.cwd, [
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+          ]).pipe(Effect.map((stdout) => stdout.trim().length > 0))
+        : false;
+
+      return { refName, hasConflicts };
     },
   );
 

@@ -1,6 +1,7 @@
 import { EnvironmentId, type VcsRef } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  canMergeLocalChangesAfterSwitchError,
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
@@ -21,6 +22,19 @@ import {
   shouldShowComposerContextStrip,
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
+
+describe("canMergeLocalChangesAfterSwitchError", () => {
+  it("only offers merge recovery for the recognized checkout failure", () => {
+    expect(
+      canMergeLocalChangesAfterSwitchError({
+        detail:
+          "Local changes would be overwritten by this branch switch. Commit or stash them, or choose Switch and merge to carry unstaged changes. Merging may create conflicts.",
+      }),
+    ).toBe(true);
+    expect(canMergeLocalChangesAfterSwitchError(new Error("git checkout failed"))).toBe(false);
+    expect(canMergeLocalChangesAfterSwitchError(null)).toBe(false);
+  });
+});
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");

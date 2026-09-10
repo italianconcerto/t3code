@@ -18,7 +18,11 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { GitCommandError, type ReviewDiffFileContentsInput } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  VCS_SWITCH_LOCAL_CHANGES_ERROR,
+  type ReviewDiffFileContentsInput,
+} from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
 import { makeGitVcsDriverCore, splitNullSeparatedGitStdoutPaths } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
@@ -1405,6 +1409,103 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           refs.refs.find((refName) => refName.name === "feature/renamed")?.current,
           true,
         );
+      }),
+    );
+
+    it.effect("offers a merge retry when local changes block a branch switch", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const baseIgnore = "target-line\n1\n2\n3\n4\n5\n6\n7\nlocal-line\n";
+        yield* writeTextFile(cwd, ".gitignore", baseIgnore);
+        yield* git(cwd, ["add", ".gitignore"]);
+        yield* git(cwd, ["commit", "-m", "add base ignore"]);
+        yield* git(cwd, ["checkout", "-b", "feature/target"]);
+        yield* writeTextFile(
+          cwd,
+          ".gitignore",
+          baseIgnore.replace("target-line", "target-updated"),
+        );
+        yield* git(cwd, ["add", ".gitignore"]);
+        yield* git(cwd, ["commit", "-m", "update target ignore"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* writeTextFile(cwd, ".gitignore", baseIgnore.replace("local-line", "local-updated"));
+
+        const error = yield* driver.switchRef({ cwd, refName: "feature/target" }).pipe(Effect.flip);
+        assert.equal(error.detail, VCS_SWITCH_LOCAL_CHANGES_ERROR);
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+
+        const switched = yield* driver.switchRef({
+          cwd,
+          refName: "feature/target",
+          mergeLocalChanges: true,
+        });
+        assert.equal(switched.refName, "feature/target");
+        assert.isFalse(switched.hasConflicts);
+        assert.equal(yield* git(cwd, ["status", "--short"]), "M .gitignore");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        assert.equal(
+          yield* fileSystem.readFileString(pathService.join(cwd, ".gitignore")),
+          baseIgnore
+            .replace("target-line", "target-updated")
+            .replace("local-line", "local-updated"),
+        );
+      }),
+    );
+
+    it.effect("does not merge a branch switch while changes are staged", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "feature/target"]);
+        yield* writeTextFile(cwd, "README.md", "# staged\n");
+        yield* git(cwd, ["add", "README.md"]);
+
+        const error = yield* driver
+          .switchRef({ cwd, refName: "feature/target", mergeLocalChanges: true })
+          .pipe(Effect.flip);
+        assert.equal(
+          error.detail,
+          "Switch and merge is unavailable while changes are staged. Commit or unstage them first.",
+        );
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "README.md");
+      }),
+    );
+
+    it.effect("reports conflicts created while carrying local changes to another branch", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* writeTextFile(cwd, "conflict.txt", "base\n");
+        yield* git(cwd, ["add", "conflict.txt"]);
+        yield* git(cwd, ["commit", "-m", "add conflict fixture"]);
+        yield* git(cwd, ["checkout", "-b", "feature/conflict"]);
+        yield* writeTextFile(cwd, "conflict.txt", "target\n");
+        yield* git(cwd, ["add", "conflict.txt"]);
+        yield* git(cwd, ["commit", "-m", "change target line"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* writeTextFile(cwd, "conflict.txt", "local\n");
+
+        const switched = yield* driver.switchRef({
+          cwd,
+          refName: "feature/conflict",
+          mergeLocalChanges: true,
+        });
+
+        assert.equal(switched.refName, "feature/conflict");
+        assert.isTrue(switched.hasConflicts);
+        assert.equal(yield* git(cwd, ["diff", "--name-only", "--diff-filter=U"]), "conflict.txt");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const contents = yield* fileSystem.readFileString(pathService.join(cwd, "conflict.txt"));
+        assert.include(contents, "local");
+        assert.include(contents, "target");
       }),
     );
 

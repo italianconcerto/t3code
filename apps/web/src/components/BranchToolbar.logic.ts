@@ -1,4 +1,10 @@
-import type { EnvironmentId, EnvironmentMachineKind, VcsRef, ProjectId } from "@t3tools/contracts";
+import {
+  VCS_SWITCH_LOCAL_CHANGES_ERROR,
+  type EnvironmentId,
+  type EnvironmentMachineKind,
+  type VcsRef,
+  type ProjectId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { toSortableTimestamp } from "../lib/threadSort";
 export {
@@ -16,6 +22,15 @@ export interface EnvironmentOption {
 
 export const EnvMode = Schema.Literals(["local", "worktree"]);
 export type EnvMode = typeof EnvMode.Type;
+
+export function canMergeLocalChangesAfterSwitchError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "detail" in error &&
+    error.detail === VCS_SWITCH_LOCAL_CHANGES_ERROR
+  );
+}
 
 const GENERIC_LOCAL_ENVIRONMENT_LABELS = new Set(["local", "local environment"]);
 

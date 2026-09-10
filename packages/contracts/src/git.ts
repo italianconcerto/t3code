@@ -180,8 +180,12 @@ export type VcsCreateRefResult = typeof VcsCreateRefResult.Type;
 export const VcsSwitchRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
+  mergeLocalChanges: Schema.optional(Schema.Boolean),
 });
 export type VcsSwitchRefInput = typeof VcsSwitchRefInput.Type;
+
+export const VCS_SWITCH_LOCAL_CHANGES_ERROR =
+  "Local changes would be overwritten by this branch switch. Commit or stash them, or choose Switch and merge to carry unstaged changes. Merging may create conflicts.";
 
 export const VcsInitInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -296,6 +300,7 @@ export type GitPreparePullRequestThreadResult = typeof GitPreparePullRequestThre
 
 export const VcsSwitchRefResult = Schema.Struct({
   refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  hasConflicts: Schema.optional(Schema.Boolean),
 });
 export type VcsSwitchRefResult = typeof VcsSwitchRefResult.Type;
 

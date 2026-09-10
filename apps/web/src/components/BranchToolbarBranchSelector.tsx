@@ -11,6 +11,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useEffectEvent,
   useId,
   useLayoutEffect,
   useMemo,
@@ -37,6 +38,7 @@ import { parsePullRequestReference } from "../pullRequestReference";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { composerFloatingLayerProps } from "./chat/composerEventScope";
 import {
+  canMergeLocalChangesAfterSwitchError,
   deriveLocalBranchNameFromRemoteRef,
   resolveBranchTriggerLabel,
   resolveBranchToolbarPrBranch,
@@ -330,6 +332,15 @@ export function BranchToolbarBranchSelector({
         ? queriedActiveBranch.isRemote === true
         : null;
   const [isBranchActionPending, startBranchActionTransition] = useTransition();
+  const mergeRetryRef = useRef<{
+    refName: VcsRef;
+    selectionTarget: ReturnType<typeof resolveBranchSelectionTarget>;
+    selectedBranchName: string;
+    environmentId: EnvironmentId;
+    branchCwd: string | null;
+    toastId: ReturnType<typeof toastManager.add>;
+  } | null>(null);
+  const [mergeRetryRequest, setMergeRetryRequest] = useState(0);
   const totalBranchCount = branchRefState.data?.totalCount ?? 0;
   const branchStatusText = isInitialBranchesLoadPending
     ? "Loading refs..."
@@ -389,6 +400,101 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  const performBranchSwitch = async (
+    refName: VcsRef,
+    selectionTarget: ReturnType<typeof resolveBranchSelectionTarget>,
+    selectedBranchName: string,
+    mergeLocalChanges = false,
+  ) => {
+    const previousBranch = resolvedActiveBranch;
+    setOptimisticBranch(selectedBranchName);
+    const checkoutResult = await switchRef({
+      environmentId,
+      input: {
+        cwd: selectionTarget.checkoutCwd,
+        refName: refName.name,
+        ...(mergeLocalChanges ? { mergeLocalChanges: true } : {}),
+      },
+    });
+    if (checkoutResult._tag === "Success") {
+      const nextBranchName = refName.isRemote
+        ? (checkoutResult.value.refName ?? selectedBranchName)
+        : selectedBranchName;
+      setOptimisticBranch(nextBranchName);
+      setThreadBranch(nextBranchName, selectionTarget.nextWorktreePath);
+      if (checkoutResult.value.hasConflicts) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Branch switched with merge conflicts.",
+            description: "Resolve conflicted files before committing or switching branches again.",
+          }),
+        );
+      }
+      return;
+    }
+    setOptimisticBranch(previousBranch);
+    if (isAtomCommandInterrupted(checkoutResult)) return;
+
+    const error = squashAtomCommandFailure(checkoutResult);
+    const canMergeLocalChanges = !mergeLocalChanges && canMergeLocalChangesAfterSwitchError(error);
+    const toastId = toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Failed to switch ref.",
+        description: toBranchActionErrorMessage(error),
+        ...(canMergeLocalChanges
+          ? {
+              actionProps: {
+                children: "Switch and merge",
+                onClick: () => {
+                  toastManager.update(toastId, {
+                    type: "loading",
+                    title: "Switching branch...",
+                    actionProps: { children: null },
+                    timeout: 0,
+                  });
+                  mergeRetryRef.current = {
+                    refName,
+                    selectionTarget,
+                    selectedBranchName,
+                    environmentId,
+                    branchCwd,
+                    toastId,
+                  };
+                  setMergeRetryRequest((request) => request + 1);
+                },
+              },
+            }
+          : {}),
+      }),
+    );
+  };
+
+  const executeMergeRetry = useEffectEvent((retry: NonNullable<typeof mergeRetryRef.current>) => {
+    runBranchAction(async () => {
+      await performBranchSwitch(
+        retry.refName,
+        retry.selectionTarget,
+        retry.selectedBranchName,
+        true,
+      );
+      toastManager.close(retry.toastId);
+    });
+  });
+
+  useEffect(() => {
+    if (mergeRetryRequest === 0) return;
+    const retry = mergeRetryRef.current;
+    if (retry === null || isBranchActionPending) return;
+    mergeRetryRef.current = null;
+    if (retry.environmentId !== environmentId || retry.branchCwd !== branchCwd) {
+      toastManager.close(retry.toastId);
+      return;
+    }
+    executeMergeRetry(retry);
+  }, [branchCwd, environmentId, isBranchActionPending, mergeRetryRequest]);
+
   const selectBranch = (refName: VcsRef) => {
     if (!branchCwd || !activeProjectCwd || isBranchActionPending) return;
 
@@ -419,35 +525,7 @@ export function BranchToolbarBranchSelector({
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
 
-    runBranchAction(async () => {
-      const previousBranch = resolvedActiveBranch;
-      setOptimisticBranch(selectedBranchName);
-      const checkoutResult = await switchRef({
-        environmentId,
-        input: {
-          cwd: selectionTarget.checkoutCwd,
-          refName: refName.name,
-        },
-      });
-      if (checkoutResult._tag === "Success") {
-        const nextBranchName = refName.isRemote
-          ? (checkoutResult.value.refName ?? selectedBranchName)
-          : selectedBranchName;
-        setOptimisticBranch(nextBranchName);
-        setThreadBranch(nextBranchName, selectionTarget.nextWorktreePath);
-        return;
-      }
-      setOptimisticBranch(previousBranch);
-      if (!isAtomCommandInterrupted(checkoutResult)) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to switch ref.",
-            description: toBranchActionErrorMessage(squashAtomCommandFailure(checkoutResult)),
-          }),
-        );
-      }
-    });
+    runBranchAction(() => performBranchSwitch(refName, selectionTarget, selectedBranchName));
   };
 
   const createRef = (rawName: string) => {
