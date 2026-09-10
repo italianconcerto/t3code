@@ -557,7 +557,7 @@ const integrationServerConfig = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-agent-session-importer-test-",
 });
 const integrationRuntimeRepository = ProviderSessionRuntime.layer.pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistenceMemory),
 );
 const integrationLayer = Layer.mergeAll(
   OrchestrationEngineLive.pipe(
@@ -986,7 +986,10 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
             }),
           );
           expect(sendTurn).toHaveBeenCalledExactlyOnceWith(
-            expect.objectContaining({ threadId, input: "Continue this session" }),
+            expect.objectContaining({
+              threadId,
+              input: expect.stringContaining('CURRENT_REQUEST_JSON="Continue this session"'),
+            }),
           );
           expect(Option.getOrThrow(yield* directory.getBinding(threadId))).toMatchObject({
             provider,

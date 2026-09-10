@@ -13,8 +13,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux-resource-monitor:
+    name: Build Linux x64 resource monitor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build resource monitor
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+
+      - name: Upload resource monitor
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-resource-monitor-linux-x64
+          path: native/resource-monitor/target/release/t3-resource-monitor
+          if-no-files-found: error
+
   release:
     name: Build and publish macOS Apple Silicon
+    needs: linux-resource-monitor
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -59,6 +80,33 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           cp .env.example .env
 
+      - name: Build server release
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pkg set --prefix apps/server version="${{ steps.version.outputs.version }}"
+          vp run --filter t3 build
+
+      - name: Download Linux resource monitor
+        uses: actions/download-artifact@v8
+        with:
+          name: fork-resource-monitor-linux-x64
+          path: apps/server/dist/resource-monitor/linux-x64
+
+      - name: Pack server release
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor
+          test -x apps/server/dist/resource-monitor/linux-x64/t3-resource-monitor
+          node apps/server/scripts/cli.ts pack \
+            --app-version "${{ steps.version.outputs.version }}" \
+            --out-dir release
+          tar -tzf "release/t3-${{ steps.version.outputs.version }}.tgz" \
+            | grep -qx 'package/dist/client/index.html'
+          tar -tzf "release/t3-${{ steps.version.outputs.version }}.tgz" \
+            | grep -qx 'package/dist/resource-monitor/linux-x64/t3-resource-monitor'
+
       - name: Build ad-hoc signed macOS release
         shell: bash
         env:
@@ -80,7 +128,7 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: T3 Code fork ${{ steps.version.outputs.version }}
-          body: Automated Apple Silicon build from `${{ github.sha }}`.
+          body: Automated Apple Silicon desktop and Linux server builds from `${{ github.sha }}`.
           prerelease: false
           make_latest: true
           fail_on_unmatched_files: true
@@ -89,3 +137,4 @@ jobs:
             release/*.zip
             release/*.blockmap
             release/*-mac.yml
+            release/t3-*.tgz

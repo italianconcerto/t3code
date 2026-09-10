@@ -1779,18 +1779,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
         );
       const startClaude = routing.claude.startSession.getMockImplementation();
       assert(startClaude);
-      routing.claude.startSession.mockImplementationOnce((input) =>
-        startClaude(input).pipe(
-          Effect.andThen(
-            Effect.fail(
-              new ProviderAdapterRequestError({
-                provider: CLAUDE_AGENT_DRIVER,
-                method: "startSession",
-                detail: "replacement failed after partial start",
-              }),
+      routing.claude.startSession.mockImplementationOnce(
+        (input) =>
+          startClaude(input).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: CLAUDE_AGENT_DRIVER,
+                  method: "startSession",
+                  detail: "replacement failed after partial start",
+                }),
+              ),
             ),
-          ),
-        ),
+          ) as never,
       );
 
       yield* provider
@@ -5056,13 +5057,11 @@ const listThreadIds = vi.fn(() =>
   Effect.succeed([activeSessionThreadId, historicalSessionThreadId]),
 );
 const getBinding = vi.fn((threadId: ThreadId) =>
-  Effect.succeed(
-    Option.some({
-      threadId,
-      provider: CODEX_DRIVER,
-      providerInstanceId: codexInstanceId,
-    }),
-  ),
+  Effect.succeedSome({
+    threadId,
+    provider: CODEX_DRIVER,
+    providerInstanceId: codexInstanceId,
+  }),
 );
 const boundedListing = makeProviderServiceLayer({
   directory: {
@@ -5110,7 +5109,10 @@ describe("agent browser access", () => {
     projectOverride?: boolean,
   ) =>
     Effect.gen(function* () {
-      const issued: Array<ThreadId> = [];
+      const issued: Array<{
+        readonly threadId: ThreadId;
+        readonly capabilities: ReadonlyArray<string>;
+      }> = [];
       const codex = makeFakeCodexAdapter();
       const providerAdapterLayer = Layer.succeed(
         ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -5169,7 +5171,10 @@ describe("agent browser access", () => {
       const providerLayer = makeProviderServiceLive({
         issueMcpCredential: (request) =>
           Effect.sync(() => {
-            issued.push(request.threadId);
+            issued.push({
+              threadId: request.threadId,
+              capabilities: [...(request.capabilities ?? [])].toSorted(),
+            });
             return undefined;
           }),
         revokeMcpCredential: (revoked) => Effect.sync(() => void revokedThreads.push(revoked)),
@@ -5210,26 +5215,27 @@ describe("agent browser access", () => {
   // Credential issuance is the observable that matters: it is the only place a
   // credential is minted, and `/mcp` accepts nothing else, so withholding it is
   // what actually denies every provider and external MCP client.
-  it.effect("requests no MCP credential when agent browser access is off", () =>
+  it.effect("requests a goal-only MCP credential when agent browser access is off", () =>
     Effect.gen(function* () {
       const issued = yield* startSessionWith(false, asThreadId("thread-browser-off"));
 
-      assert.deepEqual(issued, []);
+      assert.deepEqual(issued, [
+        { threadId: asThreadId("thread-browser-off"), capabilities: ["goal"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("revokes an already-issued credential when access is off", () =>
-    Effect.gen(function* () {
-      const threadId = asThreadId("thread-browser-revoke");
-      revokedThreads.length = 0;
+  it.effect(
+    "replaces an old credential with a goal-only credential when browser access is off",
+    () =>
+      Effect.gen(function* () {
+        const threadId = asThreadId("thread-browser-revoke");
+        revokedThreads.length = 0;
 
-      yield* startSessionWith(false, threadId);
+        yield* startSessionWith(false, threadId);
 
-      // Clearing the in-memory map is not enough: a token issued before the
-      // toggle flipped stays valid against `/mcp` for its whole liveness
-      // window, and later turns refresh it.
-      assert.deepEqual(revokedThreads, [threadId]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+        assert.deepEqual(revokedThreads, []);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("requests an MCP credential when agent browser access is on", () =>
@@ -5238,17 +5244,17 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith(true, threadId);
 
-      assert.deepEqual(issued, [threadId]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["goal", "preview"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("withholds and revokes MCP credentials when the project disables browser access", () =>
+  it.effect("withholds preview capability when the project disables browser access", () =>
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off");
       revokedThreads.length = 0;
       const issued = yield* startSessionWith(true, threadId, false);
-      assert.deepEqual(issued, []);
-      assert.deepEqual(revokedThreads, [threadId]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["goal"] }]);
+      assert.deepEqual(revokedThreads, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5256,7 +5262,7 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith(false, threadId, true);
-      assert.deepEqual(issued, [threadId]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["goal", "preview"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

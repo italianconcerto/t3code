@@ -68,3 +68,15 @@ export class ServerCliBuildAssetMissingError extends Schema.TaggedError<ServerCl
     return `Missing build asset: ${this.assetPath}. Run the build subcommand first.`;
   }
 }
+
+export class ServerCliBuildVersionMismatchError extends Schema.TaggedError<ServerCliBuildVersionMismatchError>()(
+  "ServerCliBuildVersionMismatchError",
+  {
+    expected: Schema.String,
+    actual: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Server bundle version mismatch: expected ${this.expected}, got ${this.actual}`;
+  }
+}

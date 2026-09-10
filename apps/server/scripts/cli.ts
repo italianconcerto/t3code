@@ -7,6 +7,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -22,6 +23,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import serverPackageJson from "../package.json" with { type: "json" };
 import {
   ServerCliBuildAssetMissingError,
+  ServerCliBuildVersionMismatchError,
   ServerCliCommandExitError,
   ServerCliDevelopmentIconSourceMissingError,
   ServerCliDevelopmentIconTargetMissingError,
@@ -67,6 +69,33 @@ const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   return yield* decodeWorkspaceConfig(workspaceYaml);
 });
 
+const makeReleasePackageJson = Effect.fn("makeReleasePackageJson")(function* (
+  version: string,
+  includeWorkspaceOverrides = true,
+) {
+  const workspaceConfig = yield* readWorkspaceConfig();
+  const workspaceCatalog = workspaceConfig.catalog ?? {};
+  const workspaceOverrides = workspaceConfig.overrides ?? {};
+  const pkg: PackageJson = {
+    name: serverPackageJson.name,
+    repository: serverPackageJson.repository,
+    bin: serverPackageJson.bin,
+    type: serverPackageJson.type,
+    version,
+    engines: serverPackageJson.engines,
+    files: serverPackageJson.files,
+    dependencies: resolveCatalogDependencies(
+      serverPackageJson.dependencies,
+      workspaceCatalog,
+      "apps/server",
+    ),
+    overrides: includeWorkspaceOverrides
+      ? resolveCatalogDependencies(workspaceOverrides, workspaceCatalog, "apps/server")
+      : {},
+  };
+  return yield* encodePackageJson(pkg);
+});
+
 const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(command);
@@ -80,6 +109,32 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Stan
       exitCode,
     });
   }
+});
+
+const runCommandOutput = Effect.fn("runCommandOutput")(function* (
+  command: ChildProcess.StandardCommand,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const child = yield* spawner.spawn(command);
+  const [stdout, exitCode] = yield* Effect.all([
+    child.stdout.pipe(
+      Stream.decodeText(),
+      Stream.runFold(
+        () => "",
+        (output, chunk) => output + chunk,
+      ),
+    ),
+    child.exitCode,
+  ]);
+  if (exitCode !== 0) {
+    return yield* new ServerCliCommandExitError({
+      command: command.command,
+      args: command.args,
+      cwd: command.options.cwd,
+      exitCode,
+    });
+  }
+  return stdout.trim();
 });
 
 const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
@@ -175,6 +230,69 @@ const buildCmd = Command.make(
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
+const packCmd = Command.make(
+  "pack",
+  {
+    appVersion: Flag.string("app-version").pipe(Flag.optional),
+    outDir: Flag.string("out-dir").pipe(Flag.withDefault("release")),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const repoRoot = yield* RepoRoot;
+      const serverDir = path.join(repoRoot, "apps/server");
+      const packageJsonPath = path.join(serverDir, "package.json");
+      const outputDir = path.resolve(repoRoot, config.outDir);
+      const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
+
+      for (const relPath of ["dist/bin.mjs", "dist/service-launcher.mjs"]) {
+        const abs = path.join(serverDir, relPath);
+        if (!(yield* fs.exists(abs))) {
+          return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });
+        }
+      }
+
+      const expectedBundleVersion = `t3 v${version}`;
+      const actualBundleVersion = yield* runCommandOutput(
+        ChildProcess.make(process.execPath, [path.join(serverDir, "dist/bin.mjs"), "--version"], {
+          cwd: serverDir,
+          stdout: "pipe",
+          stderr: "inherit",
+          shell: false,
+        }),
+      );
+      if (actualBundleVersion !== expectedBundleVersion) {
+        return yield* new ServerCliBuildVersionMismatchError({
+          expected: expectedBundleVersion,
+          actual: actualBundleVersion,
+        });
+      }
+
+      yield* fs.makeDirectory(outputDir, { recursive: true });
+      yield* Effect.acquireUseRelease(
+        Effect.all({
+          originalPackageJson: fs.readFile(packageJsonPath),
+          releasePackageJson: makeReleasePackageJson(version, false),
+        }),
+        ({ releasePackageJson }) =>
+          fs.writeFileString(packageJsonPath, `${releasePackageJson}\n`).pipe(
+            Effect.andThen(
+              runCommand(
+                ChildProcess.make("npm", ["pack", serverDir, "--pack-destination", outputDir], {
+                  cwd: repoRoot,
+                  stdout: "inherit",
+                  stderr: "inherit",
+                  shell: false,
+                }),
+              ),
+            ),
+          ),
+        ({ originalPackageJson }) => fs.writeFile(packageJsonPath, originalPackageJson),
+      );
+    }),
+).pipe(Command.withDescription("Create an installable server tarball with resolved dependencies."));
+
 // ---------------------------------------------------------------------------
 // publish subcommand
 // ---------------------------------------------------------------------------
@@ -238,31 +356,8 @@ const publishCmd = Command.make(
         // Acquire: resolve publish metadata and read every original before mutation.
         Effect.gen(function* () {
           const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
-          const workspaceConfig = yield* readWorkspaceConfig();
-          const workspaceCatalog = workspaceConfig.catalog ?? {};
-          const workspaceOverrides = workspaceConfig.overrides ?? {};
-          const pkg: PackageJson = {
-            name: serverPackageJson.name,
-            repository: serverPackageJson.repository,
-            bin: serverPackageJson.bin,
-            type: serverPackageJson.type,
-            version,
-            engines: serverPackageJson.engines,
-            files: serverPackageJson.files,
-            dependencies: resolveCatalogDependencies(
-              serverPackageJson.dependencies,
-              workspaceCatalog,
-              "apps/server",
-            ),
-            overrides: resolveCatalogDependencies(
-              workspaceOverrides,
-              workspaceCatalog,
-              "apps/server",
-            ),
-          };
-
           return {
-            packageJsonString: yield* encodePackageJson(pkg),
+            packageJsonString: yield* makeReleasePackageJson(version),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
             icons: yield* preparePublishIcons(repoRoot, serverDir, version),
           };
@@ -309,7 +404,7 @@ const publishCmd = Command.make(
 
 const cli = Command.make("cli").pipe(
   Command.withDescription("T3 server build & publish CLI."),
-  Command.withSubcommands([buildCmd, publishCmd]),
+  Command.withSubcommands([buildCmd, packCmd, publishCmd]),
 );
 
 Command.run(cli, { version: "0.0.0" }).pipe(

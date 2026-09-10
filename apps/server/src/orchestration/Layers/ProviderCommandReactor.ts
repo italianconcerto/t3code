@@ -7,10 +7,12 @@ import {
   type OrchestrationMessage,
   type OrchestrationEvent,
   ProviderDriverKind,
+  type ProviderInstanceId,
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
+  type ProviderRuntimeEvent,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
@@ -57,6 +59,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import * as ManagedGoals from "../../persistence/ManagedGoals.ts";
 import {
   parseAutomationCommand,
   claimLoopRun,
@@ -85,6 +88,11 @@ type ProviderIntentEvent = Extract<
       | "thread.deleted"
       | "thread.archived";
   }
+>;
+
+type GoalTerminalEvent = Extract<
+  ProviderRuntimeEvent,
+  { readonly type: "turn.completed" | "turn.aborted" }
 >;
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
@@ -121,18 +129,12 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const PROVIDER_HANDOFF_MAX_CHARS = 40_000;
 
-interface ManagedProviderGoal {
-  readonly objective: string;
-  readonly tokenBudget?: number;
-  status: "active" | "paused";
-}
-
-function buildManagedGoalInput(goal: ManagedProviderGoal, currentInput: string): string {
+function buildManagedGoalInput(goal: ManagedGoals.ManagedGoal, currentInput: string): string {
   const budget =
-    goal.tokenBudget !== undefined
-      ? `\nTreat ${goal.tokenBudget} tokens as the requested total budget; T3 cannot enforce it for this provider.`
+    goal.tokenBudget !== null
+      ? `\nThe total goal budget is ${goal.tokenBudget} tokens. T3 enforces it when this provider reports token usage.`
       : "";
-  return `T3 Code is managing this persistent goal for a provider without a native goal API. Keep the goal in scope while handling the current request. Work toward it autonomously, verify results, and clearly report blockers or completion.${budget}\n\n<goal>\n${goal.objective}\n</goal>\n\n<current_request>\n${currentInput}\n</current_request>`;
+  return `T3 Code is managing this persistent goal. Keep working autonomously until it is genuinely achieved or blocked.${budget}\n\nUse the T3 Code MCP tool t3_get_goal to inspect state. Before your final response, you MUST call the T3 Code MCP tool t3_update_goal with status complete if the objective is achieved and verified. A normal answer and the provider's native goal tools do not complete this T3-managed goal. Use t3_update_goal with status blocked only when the same blocker prevents progress; T3 requires three consecutive reports. Do not stop merely because this turn is ending: omit t3_update_goal and T3 will start another turn automatically.\n\n<goal>\n${goal.objective}\n</goal>\n\n<current_request>\n${currentInput}\n</current_request>`;
 }
 
 function formatProviderHandoffMessage(message: OrchestrationMessage): string | undefined {
@@ -393,6 +395,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const managedGoalRepository = yield* ManagedGoals.ManagedGoalRepository;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -413,7 +416,31 @@ const make = Effect.gen(function* () {
   const compactingThreadIds = new Set<ThreadId>();
   const stoppingThreadIds = new Set<ThreadId>();
   const loops = new Map<ThreadId, ScheduledLoop>();
-  const managedGoals = new Map<ThreadId, ManagedProviderGoal>();
+  const earlyGoalTerminalEvents = new Map<ThreadId, Map<string, GoalTerminalEvent>>();
+  const goalTerminalKey = (event: GoalTerminalEvent) =>
+    `${event.providerInstanceId}\0${event.turnId}`;
+  const recordEarlyGoalTerminal = (event: GoalTerminalEvent) => {
+    const buffered = earlyGoalTerminalEvents.get(event.threadId) ?? new Map();
+    buffered.set(goalTerminalKey(event), event);
+    while (buffered.size > 8) {
+      const oldestKey = buffered.keys().next().value;
+      if (oldestKey === undefined) break;
+      buffered.delete(oldestKey);
+    }
+    earlyGoalTerminalEvents.set(event.threadId, buffered);
+  };
+  const takeEarlyGoalTerminal = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    turnId: TurnId,
+  ) => {
+    const buffered = earlyGoalTerminalEvents.get(threadId);
+    const key = `${providerInstanceId}\0${turnId}`;
+    const event = buffered?.get(key);
+    buffered?.delete(key);
+    if (buffered?.size === 0) earlyGoalTerminalEvents.delete(threadId);
+    return event;
+  };
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -1256,6 +1283,144 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const goalTokenCount = (event: ProviderRuntimeEvent): number => {
+    if (event.type !== "turn.completed" && event.type !== "turn.aborted") return 0;
+    const usage = event.payload.tokenUsage;
+    return Math.max(0, (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0));
+  };
+
+  const processGoalRuntimeEvent = Effect.fn("processGoalRuntimeEvent")(function* (
+    event: ProviderRuntimeEvent,
+  ) {
+    if (event.type !== "turn.completed" && event.type !== "turn.aborted") return;
+    const existing = Option.getOrUndefined(yield* managedGoalRepository.get(event.threadId));
+    if (!existing) return;
+    if (
+      existing.expectedProviderInstanceId === null ||
+      event.providerInstanceId !== existing.expectedProviderInstanceId
+    ) {
+      return;
+    }
+    if (existing.expectedTurnId === null) {
+      if (existing.status === "active" && existing.awaitingTurn) {
+        recordEarlyGoalTerminal(event);
+      }
+      return;
+    }
+    if (event.turnId !== existing.expectedTurnId) return;
+    takeEarlyGoalTerminal(event.threadId, event.providerInstanceId, event.turnId);
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const tokensUsed = existing.tokensUsed + goalTokenCount(event);
+    const errorMessage = event.type === "turn.completed" ? event.payload.errorMessage : undefined;
+    const failed = event.type === "turn.completed" && event.payload.state === "failed";
+    const usageLimited =
+      failed &&
+      /(?:usage|rate|weekly|monthly).*limit|limit.*(?:usage|rate)/iu.test(errorMessage ?? "");
+    const nextStatus =
+      existing.status !== "active"
+        ? existing.status
+        : event.type === "turn.aborted"
+          ? "paused"
+          : usageLimited
+            ? "usageLimited"
+            : failed
+              ? "blocked"
+              : existing.tokenBudget !== null && tokensUsed >= existing.tokenBudget
+                ? "budgetLimited"
+                : "active";
+    const next: ManagedGoals.ManagedGoal = {
+      ...existing,
+      status: nextStatus,
+      tokensUsed,
+      awaitingTurn: false,
+      expectedTurnId: null,
+      updatedAtMs: now,
+      ...(failed && errorMessage ? { blockedReason: errorMessage } : {}),
+    };
+    yield* managedGoalRepository.upsert(next);
+    if (nextStatus !== "active" && nextStatus !== "paused") {
+      yield* appendAutomationResult(
+        event.threadId,
+        `Goal ${nextStatus}: ${next.objective} • ${tokensUsed}${next.tokenBudget !== null ? ` / ${next.tokenBudget}` : ""} tokens`,
+      );
+    }
+  });
+
+  const runDueGoals = Effect.fn("runDueGoals")(function* () {
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    for (const goal of yield* managedGoalRepository.listActive()) {
+      if (goal.awaitingTurn) continue;
+      const thread = yield* resolveThreadShell(goal.threadId);
+      if (!thread || thread.archivedAt !== null || thread.settledOverride === "settled") {
+        yield* managedGoalRepository.upsert({
+          ...goal,
+          status: "paused",
+          awaitingTurn: false,
+          updatedAtMs: now,
+        });
+        continue;
+      }
+      const busy =
+        thread.session?.status === "running" ||
+        thread.session?.status === "starting" ||
+        thread.hasPendingApprovals ||
+        thread.hasPendingUserInput ||
+        thread.backgroundLiveness != null ||
+        compactingThreadIds.has(goal.threadId) ||
+        stoppingThreadIds.has(goal.threadId);
+      if (busy) continue;
+
+      yield* managedGoalRepository.upsert({
+        ...goal,
+        awaitingTurn: true,
+        expectedProviderInstanceId: thread.modelSelection.instanceId,
+        expectedTurnId: null,
+        updatedAtMs: now,
+      });
+      const createdAt = DateTime.formatIso(DateTime.makeUnsafe(now));
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.turn.start",
+          commandId: yield* serverCommandId("goal-turn"),
+          threadId: goal.threadId,
+          message: {
+            messageId: MessageId.make(yield* crypto.randomUUIDv4),
+            role: "user",
+            text: "Continue working toward the active goal. Verify the result before completing it.",
+            attachments: [],
+          },
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            managedGoalRepository
+              .upsert({
+                ...goal,
+                status: "blocked",
+                awaitingTurn: false,
+                blockedReason: formatFailureDetail(cause),
+                updatedAtMs: now,
+              })
+              .pipe(
+                Effect.andThen(
+                  appendProviderFailureActivity({
+                    threadId: goal.threadId,
+                    kind: "provider.turn.start.failed",
+                    summary: "Goal blocked after continuation dispatch failed",
+                    detail: formatFailureDetail(cause),
+                    turnId: null,
+                    createdAt,
+                  }),
+                ),
+              ),
+          ),
+        );
+    }
+  });
+
   const runDueLoops = Effect.fn("runDueLoops")(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     for (const [threadId, loop] of loops) {
@@ -1360,11 +1525,25 @@ const make = Effect.gen(function* () {
       }
       loops.delete(thread.id);
       const detail = formatFailureDetail(cause);
-      return setThreadSessionErrorOnTurnStartFailure({
-        threadId: event.payload.threadId,
-        detail,
-        createdAt: event.payload.createdAt,
-      }).pipe(
+      return managedGoalRepository.get(thread.id).pipe(
+        Effect.flatMap((goal) =>
+          Option.isSome(goal) && goal.value.status === "active"
+            ? managedGoalRepository.upsert({
+                ...goal.value,
+                status: "blocked",
+                awaitingTurn: false,
+                blockedReason: detail,
+                updatedAtMs: DateTime.toEpochMillis(DateTime.makeUnsafe(event.payload.createdAt)),
+              })
+            : Effect.void,
+        ),
+        Effect.andThen(
+          setThreadSessionErrorOnTurnStartFailure({
+            threadId: event.payload.threadId,
+            detail,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
         Effect.flatMap(() => appendTurnStartFailure("Provider turn start failed", detail)),
         Effect.asVoid,
       );
@@ -1490,71 +1669,69 @@ const make = Effect.gen(function* () {
       }
       let continueWithManagedGoal = false;
       yield* Effect.gen(function* () {
-        // Goal APIs start their own native turns. Do not send the slash command as model input.
-        const instanceId =
-          event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
-        const instance = yield* providerService.getInstanceInfo(instanceId);
-        // A T3-managed goal remains authoritative after a provider switch.
-        // Otherwise switching to Codex would keep wrapping prompts with the
-        // managed goal while status/pause/clear unexpectedly queried Codex's
-        // unrelated native goal state.
-        if (instance.driverKind !== "codex" || managedGoals.has(thread.id)) {
-          const command = automation.command;
-          if (command.action === "set") {
-            managedGoals.set(thread.id, {
-              objective: command.objective,
-              ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
-              status: "active",
+        const command = automation.command;
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        if (command.action === "set") {
+          earlyGoalTerminalEvents.delete(thread.id);
+          const goal: ManagedGoals.ManagedGoal = {
+            threadId: thread.id,
+            objective: command.objective,
+            status: "active",
+            tokenBudget: command.tokenBudget ?? null,
+            tokensUsed: 0,
+            startedAtMs: now,
+            updatedAtMs: now,
+            awaitingTurn: true,
+            expectedProviderInstanceId:
+              event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
+            expectedTurnId: null,
+            blockedAttempts: 0,
+            blockedReason: null,
+          };
+          yield* managedGoalRepository.upsert(goal);
+          providerMessageText = command.objective;
+          continueWithManagedGoal = true;
+          yield* appendAutomationResult(
+            thread.id,
+            "Goal active. T3 will continue automatically until complete, blocked, paused, usage-limited, or budget-limited.",
+            message.id,
+          );
+          return;
+        }
+        const goal = Option.getOrUndefined(yield* managedGoalRepository.get(thread.id));
+        if (command.action === "clear") {
+          earlyGoalTerminalEvents.delete(thread.id);
+          if (goal) yield* managedGoalRepository.delete(thread.id);
+          yield* appendAutomationResult(
+            thread.id,
+            goal ? "Goal cleared." : "No active goal.",
+            message.id,
+          );
+          return;
+        }
+        if (command.action === "pause" || command.action === "resume") {
+          if (goal) {
+            yield* managedGoalRepository.upsert({
+              ...goal,
+              status: command.action === "pause" ? "paused" : "active",
+              awaitingTurn: command.action === "pause" ? goal.awaitingTurn : false,
+              ...(command.action === "resume" ? { expectedTurnId: null } : {}),
+              updatedAtMs: now,
             });
-            providerMessageText = command.objective;
-            continueWithManagedGoal = true;
-            yield* appendAutomationResult(
-              thread.id,
-              "T3 goal active. T3 will include it in future turns until paused or cleared. This managed goal stops when the server restarts.",
-              message.id,
-            );
-            return;
-          }
-          const goal = managedGoals.get(thread.id);
-          if (command.action === "clear") {
-            yield* appendAutomationResult(
-              thread.id,
-              managedGoals.delete(thread.id) ? "Goal cleared." : "No active goal.",
-              message.id,
-            );
-            return;
-          }
-          if (command.action === "pause" || command.action === "resume") {
-            if (goal) goal.status = command.action === "pause" ? "paused" : "active";
-            yield* appendAutomationResult(
-              thread.id,
-              goal ? `Goal ${goal.status}: ${goal.objective}` : "No active goal.",
-              message.id,
-            );
-            return;
           }
           yield* appendAutomationResult(
             thread.id,
             goal
-              ? `Goal ${goal.status}: ${goal.objective}${goal.tokenBudget !== undefined ? ` • budget ${goal.tokenBudget} tokens` : ""}`
+              ? `Goal ${command.action === "pause" ? "paused" : "active"}: ${goal.objective}`
               : "No active goal.",
             message.id,
           );
           return;
         }
-        yield* ensureThreadWorktree(thread);
-        yield* ensureSessionForThread(
-          thread.id,
-          event.payload.createdAt,
-          event.payload.modelSelection !== undefined
-            ? { modelSelection: event.payload.modelSelection }
-            : {},
-        );
-        const goal = yield* providerService.goal(thread.id, automation.command);
         yield* appendAutomationResult(
           thread.id,
           goal
-            ? `Goal ${goal.status}: ${goal.objective} • ${goal.tokensUsed}${goal.tokenBudget != null ? ` / ${goal.tokenBudget}` : ""} tokens • ${goal.timeUsedSeconds}s`
+            ? `Goal ${goal.status}: ${goal.objective} • ${goal.tokensUsed}${goal.tokenBudget != null ? ` / ${goal.tokenBudget}` : ""} tokens • ${Math.max(0, Math.floor((now - goal.startedAtMs) / 1_000))}s`
             : "No active goal.",
           message.id,
         );
@@ -1566,9 +1743,23 @@ const make = Effect.gen(function* () {
       if (!continueWithManagedGoal) return;
     }
 
-    const managedGoal = managedGoals.get(thread.id);
+    const managedGoal = Option.getOrUndefined(yield* managedGoalRepository.get(thread.id));
     if (managedGoal?.status === "active") {
       providerMessageText = buildManagedGoalInput(managedGoal, providerMessageText);
+      const expectedProviderInstanceId =
+        event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
+      if (
+        !managedGoal.awaitingTurn ||
+        managedGoal.expectedProviderInstanceId !== expectedProviderInstanceId
+      ) {
+        yield* managedGoalRepository.upsert({
+          ...managedGoal,
+          awaitingTurn: true,
+          expectedProviderInstanceId,
+          expectedTurnId: null,
+          updatedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+        });
+      }
     }
 
     yield* ensureThreadWorktree(thread);
@@ -1707,7 +1898,7 @@ const make = Effect.gen(function* () {
       createdAt: event.payload.createdAt,
       hasOtherUserMessages,
     }).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
     );
 
@@ -1715,9 +1906,49 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap(({ turnId }) =>
+        Effect.gen(function* () {
+          const goal = yield* managedGoalRepository.get(event.payload.threadId);
+          if (!Option.isSome(goal) || goal.value.status !== "active" || !goal.value.awaitingTurn) {
+            return;
+          }
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          const correlated = {
+            ...goal.value,
+            expectedProviderInstanceId:
+              sendTurnRequest.value.modelSelection?.instanceId ??
+              event.payload.modelSelection?.instanceId ??
+              goal.value.expectedProviderInstanceId,
+            expectedTurnId: turnId,
+            updatedAtMs: now,
+          };
+          yield* managedGoalRepository.upsert(correlated);
+          const earlyTerminal =
+            correlated.expectedProviderInstanceId === null
+              ? undefined
+              : takeEarlyGoalTerminal(
+                  event.payload.threadId,
+                  correlated.expectedProviderInstanceId,
+                  turnId,
+                );
+          if (earlyTerminal !== undefined) {
+            yield* processGoalRuntimeEvent(earlyTerminal);
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to correlate persistent goal turn", {
+              threadId: event.payload.threadId,
+              turnId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      ),
+      Effect.asVoid,
+      Effect.catchCause(recoverTurnStartFailure),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1986,7 +2217,8 @@ const make = Effect.gen(function* () {
       case "thread.deleted":
       case "thread.archived":
         loops.delete(event.payload.threadId);
-        managedGoals.delete(event.payload.threadId);
+        earlyGoalTerminalEvents.delete(event.payload.threadId);
+        yield* managedGoalRepository.delete(event.payload.threadId);
         return;
       case "thread.meta-updated":
         yield* threadTitleRegenerationWorker.enqueue(event);
@@ -2018,6 +2250,18 @@ const make = Effect.gen(function* () {
         return;
       case "thread.session-stop-requested":
         loops.delete(event.payload.threadId);
+        yield* managedGoalRepository.get(event.payload.threadId).pipe(
+          Effect.flatMap((goal) =>
+            Option.isSome(goal) && goal.value.status === "active"
+              ? managedGoalRepository.upsert({
+                  ...goal.value,
+                  status: "paused",
+                  awaitingTurn: false,
+                  updatedAtMs: DateTime.toEpochMillis(DateTime.makeUnsafe(event.payload.createdAt)),
+                })
+              : Effect.void,
+          ),
+        );
         yield* processSessionStopRequested(event);
         return;
       case "thread.settled": {
@@ -2055,21 +2299,64 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const processGoalRuntimeEventSafely = (event: ProviderRuntimeEvent) =>
+    processGoalRuntimeEvent(event).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        return Effect.logWarning("provider command reactor failed to process goal runtime event", {
+          eventType: event.type,
+          threadId: event.threadId,
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+
   // Timer wakes and user commands share a worker, so cancellation cannot race a due dispatch.
   const worker = yield* makeDrainableWorker(
-    (event: ProviderIntentEvent | { type: "automation.tick" }) =>
+    (
+      event:
+        | ProviderIntentEvent
+        | { type: "automation.tick" }
+        | { type: "goal.runtime"; runtimeEvent: ProviderRuntimeEvent },
+    ) =>
       event.type === "automation.tick"
-        ? runDueLoops().pipe(
+        ? Effect.all([runDueLoops(), runDueGoals()], { concurrency: 1, discard: true }).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("Loop scheduler failed", { cause: Cause.pretty(cause) }),
+              Effect.logWarning("Automation scheduler failed", { cause: Cause.pretty(cause) }),
             ),
           )
-        : processDomainEventSafely(event),
+        : event.type === "goal.runtime"
+          ? processGoalRuntimeEventSafely(event.runtimeEvent)
+          : processDomainEventSafely(event),
   );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    const recoveryNow = DateTime.toEpochMillis(yield* DateTime.now);
+    yield* managedGoalRepository.listActive().pipe(
+      Effect.flatMap((goals) =>
+        Effect.forEach(
+          goals,
+          (goal) =>
+            managedGoalRepository.upsert({
+              ...goal,
+              awaitingTurn: false,
+              expectedTurnId: null,
+              updatedAtMs: recoveryNow,
+            }),
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to recover persistent goals", { cause: Cause.pretty(cause) }),
+      ),
+    );
     yield* forkParked(
       worker.enqueue({ type: "automation.tick" }).pipe(Effect.repeat(Schedule.spaced("1 second"))),
+    );
+    yield* forkParked(
+      Stream.runForEach(providerService.streamEvents, (runtimeEvent) =>
+        worker.enqueue({ type: "goal.runtime", runtimeEvent }),
+      ),
     );
     const interruptedTitleRegenerations = yield* findInterruptedThreadTitleRegenerations().pipe(
       Effect.catchCause((cause) => {
