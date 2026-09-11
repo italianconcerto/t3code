@@ -1466,7 +1466,7 @@ const make = Effect.gen(function* () {
         thread.session?.status === "starting" ||
         thread.hasPendingApprovals ||
         thread.hasPendingUserInput ||
-        thread.backgroundLiveness != null ||
+        thread.backgroundLiveness === "working" ||
         compactingThreadIds.has(goal.threadId) ||
         stoppingThreadIds.has(goal.threadId);
       if (busy) continue;
@@ -1557,7 +1557,7 @@ const make = Effect.gen(function* () {
         thread.session?.status === "starting" ||
         thread.hasPendingApprovals ||
         thread.hasPendingUserInput ||
-        thread.backgroundLiveness != null ||
+        thread.backgroundLiveness === "working" ||
         compactingThreadIds.has(threadId) ||
         stoppingThreadIds.has(threadId);
       if (busy) {

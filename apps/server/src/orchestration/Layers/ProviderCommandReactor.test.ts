@@ -496,9 +496,14 @@ describe("ProviderCommandReactor", () => {
       },
     };
 
+    const backgroundLiveness = ThreadBackgroundLiveness.make();
+    const backgroundLivenessLayer = Layer.succeed(
+      ThreadBackgroundLiveness.ThreadBackgroundLivenessService,
+      backgroundLiveness,
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(backgroundLivenessLayer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationEventStoreLive),
@@ -507,7 +512,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
-      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(backgroundLivenessLayer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
@@ -714,6 +719,7 @@ describe("ProviderCommandReactor", () => {
 
     return {
       engine,
+      backgroundLiveness,
       snapshotQuery,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       readPendingTurnStarts: () =>
@@ -1625,6 +1631,84 @@ describe("ProviderCommandReactor", () => {
       await harness.runEffect(TestClock.adjust("10 seconds"));
       await harness.drain();
       expect(harness.sendTurn).toHaveBeenCalledTimes(runs);
+    },
+  );
+
+  it.each(
+    (["goal", "loop"] as const).flatMap((automation) =>
+      (["local_bash", "subagent"] as const).map((taskType) => ({ automation, taskType })),
+    ),
+  )(
+    "$automation allows background monitors but waits for agents: $taskType",
+    async ({ automation, taskType }) => {
+      const harness = await createHarness({ testClock: true });
+      const threadId = ThreadId.make("thread-1");
+      await dispatchAutomation(
+        harness,
+        automation === "goal" ? "/goal Check progress" : "/loop 5s Check progress",
+        "monitor-diagnostic-start",
+      );
+      await harness.drain();
+      const initialTurns = automation === "goal" ? 1 : 0;
+      expect(harness.sendTurn).toHaveBeenCalledTimes(initialTurns);
+      if (automation === "goal") {
+        await harness.emitRuntimeEvent({
+          type: "turn.completed",
+          eventId: EventId.make("monitor-diagnostic-terminal"),
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          threadId,
+          turnId: asTurnId("turn-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          payload: { state: "completed" },
+        });
+        await harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("monitor-diagnostic-ready"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        );
+        await harness.drain();
+        expect(await harness.readManagedGoal()).toMatchObject({ awaitingTurn: false });
+      }
+      harness.backgroundLiveness.recordTaskLiveness({
+        threadId,
+        taskId: "diagnostic-monitor",
+        taskType,
+        status: "running",
+        kind: "started",
+      });
+      const blocksContinuation = taskType === "subagent";
+      expect(harness.backgroundLiveness.getThreadBackgroundLiveness(threadId)).toBe(
+        blocksContinuation ? "working" : "monitoring",
+      );
+      for (let interval = 0; interval < 3; interval++) {
+        await harness.runEffect(TestClock.adjust("5 seconds"));
+        await harness.drain();
+        expect(harness.sendTurn).toHaveBeenCalledTimes(initialTurns + (blocksContinuation ? 0 : 1));
+      }
+      harness.backgroundLiveness.recordTaskLiveness({
+        threadId,
+        taskId: "diagnostic-monitor",
+        taskType,
+        status: "completed",
+        kind: "completed",
+      });
+      await harness.runEffect(TestClock.adjust("5 seconds"));
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledTimes(initialTurns + 1);
     },
   );
 

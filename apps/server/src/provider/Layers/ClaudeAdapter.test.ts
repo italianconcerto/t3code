@@ -4325,6 +4325,97 @@ describe("ClaudeAdapterLive", () => {
       return { runtimeEvents, runtimeEventsFiber, drainSdkMessages };
     });
 
+  it.effect("opens a resumed parent turn before streaming and ignores subagent starts", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const { runtimeEvents, runtimeEventsFiber, drainSdkMessages } =
+        yield* observeUsageLimitEvents(adapter, harness.query);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "monitor", attachments: [] });
+      const result = {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sdk-monitor",
+        uuid: "result-monitor",
+      } as unknown as SDKMessage;
+      harness.query.emit(result);
+      yield* drainSdkMessages;
+      const previousStarts = runtimeEvents.filter((event) => event.type === "turn.started").length;
+      const emitStream = (event: unknown, parentToolUseId: string | null = null) =>
+        harness.query.emit({
+          type: "stream_event",
+          event,
+          parent_tool_use_id: parentToolUseId,
+          session_id: "sdk-monitor",
+          uuid: "stream-monitor",
+        } as unknown as SDKMessage);
+
+      emitStream({ type: "message_start", message: { id: "child" } }, "child-tool");
+      yield* drainSdkMessages;
+      assert.equal(
+        runtimeEvents.filter((event) => event.type === "turn.started").length,
+        previousStarts,
+      );
+
+      emitStream({ type: "message_start", message: { id: "resumed-parent" } });
+      emitStream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      });
+      emitStream({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Resumed" },
+      });
+      yield* drainSdkMessages;
+      const resumed = runtimeEvents.findLast((event) => event.type === "turn.started");
+      assert.equal(
+        runtimeEvents.filter((event) => event.type === "turn.started").length,
+        previousStarts + 1,
+      );
+      assert.ok(resumed?.turnId);
+      assert.ok(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "content.delta" &&
+            event.turnId === resumed.turnId &&
+            event.payload.delta === "Resumed",
+        ),
+      );
+      assert.equal((yield* adapter.listSessions())[0]?.activeTurnId, resumed.turnId);
+
+      harness.query.emit({
+        type: "assistant",
+        parent_tool_use_id: null,
+        session_id: "sdk-monitor",
+        uuid: "assistant-resumed",
+        message: { id: "resumed-parent", content: [{ type: "text", text: "Resumed" }] },
+      } as unknown as SDKMessage);
+      harness.query.emit(result);
+      yield* drainSdkMessages;
+      assert.equal(
+        runtimeEvents.filter((event) => event.type === "turn.started").length,
+        previousStarts + 1,
+      );
+      assert.ok(
+        runtimeEvents.some(
+          (event) => event.type === "turn.completed" && event.turnId === resumed.turnId,
+        ),
+      );
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("surfaces a rejected Claude usage limit once per turn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

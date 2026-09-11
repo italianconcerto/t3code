@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../../orchestration/ThreadBackgroundLiveness.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import { ProviderValidationError } from "../Errors.ts";
@@ -178,6 +179,7 @@ describe("ProviderSessionReaper", () => {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
   }) {
+    const backgroundLiveness = ThreadBackgroundLiveness.make();
     const stoppedThreadIds = new Set<ThreadId>();
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
       (request) =>
@@ -228,6 +230,9 @@ describe("ProviderSessionReaper", () => {
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
     }).pipe(
+      Layer.provide(
+        Layer.succeed(ThreadBackgroundLiveness.ThreadBackgroundLivenessService, backgroundLiveness),
+      ),
       Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provideMerge(runtimeRepositoryLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
@@ -265,7 +270,7 @@ describe("ProviderSessionReaper", () => {
     );
 
     runtime = ManagedRuntime.make(layer);
-    return { stopSession, stoppedThreadIds };
+    return { stopSession, stoppedThreadIds, backgroundLiveness };
   }
 
   it("reaps stale persisted sessions without active turns", async () => {
@@ -313,6 +318,62 @@ describe("ProviderSessionReaper", () => {
 
     expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
     expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
+  });
+
+  it("protects live monitors even when the SQL snapshot lacks background work", async () => {
+    const threadId = ThreadId.make("thread-reaper-monitor-race");
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const completedAt = "2026-01-01T01:00:00.000Z";
+    const readModel = makeReadModel([
+      {
+        id: threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: startedAt,
+        },
+      },
+    ]);
+    const harness = await createHarness({ readModel });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: startedAt,
+        resumeCursor: { opaque: "monitor-race" },
+        runtimePayload: null,
+      }),
+    );
+    harness.backgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "monitor",
+      taskType: "local_bash",
+      status: "running",
+      kind: "started",
+    });
+    await sweepAt(Date.parse(completedAt));
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    // Ingestion persists completion freshness before removing liveness.
+    readModel.threads[0] = {
+      ...readModel.threads[0]!,
+      session: { ...readModel.threads[0]!.session!, updatedAt: completedAt },
+    };
+    harness.backgroundLiveness.clearThreadLiveness(threadId);
+    await sweepAt(Date.parse(completedAt) + 999);
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    await sweepAt(Date.parse(completedAt) + 1001);
+    expect(harness.stopSession).toHaveBeenCalledOnce();
   });
 
   it("skips stale sessions when the thread still has an active turn", async () => {

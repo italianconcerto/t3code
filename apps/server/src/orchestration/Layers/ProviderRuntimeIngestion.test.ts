@@ -3964,6 +3964,44 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.payload).toMatchObject({ requestId: "message-compact" });
   });
 
+  it.each(["task.completed", "task.updated"] as const)(
+    "%s gives an idle session a fresh window after a long monitor",
+    async (type) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      const provider = ProviderDriverKind.make("codex");
+      await harness.emitAndDrain([
+        {
+          type: "task.started",
+          eventId: asEventId("long-monitor-start"),
+          threadId,
+          provider,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          payload: { taskId: "long-monitor", taskType: "local_bash" },
+        },
+      ]);
+      expect((await harness.readThreadShell()).backgroundLiveness).toBe("monitoring");
+      const completedAt = "2026-01-01T01:00:00.000Z";
+      await harness.emitAndDrain([
+        {
+          type,
+          eventId: asEventId("long-monitor-end"),
+          threadId,
+          provider,
+          createdAt: completedAt,
+          payload: { taskId: "long-monitor", taskType: "local_bash", status: "completed" },
+        },
+      ]);
+      const thread = await harness.readThreadShell();
+      expect(thread.backgroundLiveness).toBeNull();
+      expect(thread.session).toMatchObject({
+        status: "ready",
+        activeTurnId: null,
+        updatedAt: completedAt,
+      });
+    },
+  );
+
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

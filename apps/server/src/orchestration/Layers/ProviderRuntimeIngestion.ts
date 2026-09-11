@@ -2030,6 +2030,30 @@ const make = Effect.gen(function* () {
             status?: string;
             agentId?: string;
           };
+          // Refresh the idle window before dropping background liveness. A
+          // long-running monitor can finish just before a reaper sweep, while
+          // the provider is still preparing its automatic follow-up turn.
+          if (
+            thread.session?.status === "ready" &&
+            thread.session.providerName === event.provider &&
+            (event.providerInstanceId === undefined ||
+              sameId(thread.session.providerInstanceId, event.providerInstanceId)) &&
+            threadBackgroundLiveness.getThreadBackgroundLiveness(thread.id) !== null &&
+            (event.type === "task.completed" ||
+              (event.type === "task.updated" &&
+                ["completed", "failed", "stopped", "cancelled", "interrupted", "idle"].includes(
+                  payload.status ?? "",
+                ))) &&
+            Date.parse(now) > Date.parse(thread.session.updatedAt)
+          ) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: yield* providerCommandId(event, "background-completion-session-touch"),
+              threadId: thread.id,
+              session: { ...thread.session, updatedAt: now },
+              createdAt: now,
+            });
+          }
           threadBackgroundLiveness.recordTaskLiveness({
             threadId: thread.id,
             taskId: payload.taskId,
