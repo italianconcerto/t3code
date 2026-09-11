@@ -626,7 +626,7 @@ export function ProviderInstanceCard({
                   {versionLabel}
                 </code>
               ) : null}
-              {versionAdvisory ? (
+              {versionAdvisory || onRunUpdate ? (
                 onRunUpdate ? (
                   <Button
                     type="button"
@@ -698,6 +698,19 @@ export function ProviderInstanceCard({
         </Badge>
       ) : null}
       {versionCodeNode}
+      {onRunUpdate ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          aria-label={`Update ${displayName}`}
+          disabled={readOnly || isUpdating}
+          onClick={onRunUpdate}
+        >
+          {isUpdating ? <Spinner /> : <DownloadIcon />}
+          {isUpdating ? "Updating" : "Update"}
+        </Button>
+      ) : null}
       <span
         inert={readOnly}
         aria-disabled={readOnly || undefined}

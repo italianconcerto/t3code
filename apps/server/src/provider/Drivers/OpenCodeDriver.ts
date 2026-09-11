@@ -108,6 +108,8 @@ export function makeOpenCodeBackedDriver<Settings>(
     nativeUpdate: {
       args: ["upgrade"],
       isCommandPath: isOpenCodeNativeCommandPath,
+      supportsWrappedInstall: true,
+      wrappedInstallHelpText: "opencode upgrade",
     },
   });
 

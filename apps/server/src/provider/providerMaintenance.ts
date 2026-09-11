@@ -110,6 +110,8 @@ export interface PackageManagedProviderMaintenanceDefinition {
     readonly isCommandPath: (commandPath: string) => boolean;
     /** The CLI can identify its own installation even behind a user wrapper. */
     readonly supportsWrappedInstall?: boolean;
+    /** Require this usage text from `<args> --help` before offering an opaque wrapper. */
+    readonly wrappedInstallHelpText?: string;
     /** Environment the native updater needs to target this instance's install. */
     readonly env?: NodeJS.ProcessEnv;
   } | null;
@@ -474,6 +476,10 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
   }
 
   if (nativeUpdate?.supportsWrappedInstall) {
+    if (nativeUpdate.wrappedInstallHelpText) {
+      const help = yield* runNativeUpdateHelp(context, nativeUpdate.args);
+      if (!help?.includes(nativeUpdate.wrappedInstallHelpText)) return manual;
+    }
     return makeProviderMaintenanceCapabilities({
       provider: definition.provider,
       packageName,
@@ -485,6 +491,35 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     });
   }
   return manual;
+});
+
+const runNativeUpdateHelp = Effect.fn("runNativeUpdateHelp")(function* (
+  context: ProviderMaintenanceResolutionContext,
+  args: ReadonlyArray<string>,
+) {
+  return yield* Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(
+      ChildProcess.make(context.resolvedCommandPath, [...args, "--help"], {
+        env: context.env,
+        extendEnv: true,
+      }),
+    );
+    const [output, exitCode] = yield* Effect.all(
+      [
+        collectUint8StreamText({ stream: child.stdout, maxBytes: 32 * 1024 }),
+        child.exitCode,
+        Stream.runDrain(child.stderr),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return Number(exitCode) === 0 && !output.truncated ? output.text : null;
+  }).pipe(
+    Effect.scoped,
+    Effect.timeoutOption(Duration.seconds(4)),
+    Effect.map(Option.getOrNull),
+    Effect.catchCause(() => Effect.succeed(null)),
+  );
 });
 
 /**

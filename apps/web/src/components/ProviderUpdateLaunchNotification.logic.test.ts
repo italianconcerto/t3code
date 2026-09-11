@@ -24,6 +24,7 @@ import {
   getProviderUpdateSidebarPillView,
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateCandidate,
+  isProviderSettingsUpdateCandidate,
   isTerminalProviderUpdatePhase,
   localEnvironmentUpdateNotificationKey,
   providerUpdateNotificationKey,
@@ -90,6 +91,19 @@ function updateCandidate(input: Parameters<typeof provider>[0]): ProviderUpdateC
 }
 
 describe("provider update launch notification logic", () => {
+  it.each(["unknown", "current", "behind_latest"] as const)(
+    "keeps Settings updates available when version status is %s",
+    (advisoryStatus) => {
+      const value = provider({ driver: driver("cursor"), advisoryStatus, latestVersion: null });
+      expect(isProviderSettingsUpdateCandidate(value)).toBe(true);
+      expect(isProviderSettingsUpdateCandidate({ ...value, installed: false })).toBe(false);
+      expect(isProviderSettingsUpdateCandidate({ ...value, enabled: false })).toBe(false);
+      expect(
+        isProviderSettingsUpdateCandidate(provider({ driver: driver("cursor"), canUpdate: false })),
+      ).toBe(false);
+      expect(isProviderUpdateCandidate(value)).toBe(false);
+    },
+  );
   it("detects enabled providers with a latest-version advisory", () => {
     expect(isProviderUpdateCandidate(provider({ driver: driver("codex") }))).toBe(true);
     expect(isProviderUpdateCandidate(provider({ driver: driver("codex"), enabled: false }))).toBe(

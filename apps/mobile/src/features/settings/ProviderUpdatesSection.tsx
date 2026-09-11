@@ -16,10 +16,7 @@ export function ProviderUpdatesSection(props: { environmentId: EnvironmentId; la
   const pending = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
   const candidates = (providers ?? []).filter(
-    (provider) =>
-      provider.enabled &&
-      provider.versionAdvisory?.status === "behind_latest" &&
-      provider.versionAdvisory.canUpdate,
+    (provider) => provider.enabled && provider.installed && provider.versionAdvisory?.canUpdate,
   );
   if (candidates.length === 0) return null;
   const runUpdate = async (provider: ServerProvider) => {

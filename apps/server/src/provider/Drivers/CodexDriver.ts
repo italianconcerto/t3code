@@ -81,7 +81,8 @@ function isCodexStandaloneCommandPath(commandPath: string): boolean {
 }
 
 /**
- * `codex update` replaces the standalone tree under `CODEX_HOME`. That tree
+ * `codex update` also delegates to the package manager for wrapped installs.
+ * For standalone installs it replaces the tree under `CODEX_HOME`. That tree
  * lives in the shared home even when an auth-overlay shadow home is in use
  * (the overlay only carries auth and a few local entries), so the updater
  * runs against `sharedHomePath` rather than the instance's effective home.
@@ -93,6 +94,8 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
     nativeUpdate: {
       args: ["update"],
       isCommandPath: isCodexStandaloneCommandPath,
+      supportsWrappedInstall: true,
+      wrappedInstallHelpText: "Usage: codex update",
       env: { CODEX_HOME: sharedHomePath },
     },
   });

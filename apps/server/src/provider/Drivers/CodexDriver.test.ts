@@ -56,6 +56,59 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 it.layer(testLayer)("CodexDriver", (it) => {
+  for (const supported of [true, false]) {
+    it.effect.skipIf(windowsHost)(`only offers wrapper updates when supported: ${supported}`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-wrapper-" });
+        const binaryPath = NodePath.join(tempDir, "dev tools", "codex");
+        const sharedHome = NodePath.join(tempDir, "shared");
+        yield* fs.makeDirectory(NodePath.dirname(binaryPath), { recursive: true });
+        const usage = supported
+          ? "Usage: codex update [OPTIONS]"
+          : "Usage: codex [OPTIONS] [PROMPT]";
+        yield* fs.writeFileString(
+          binaryPath,
+          `#!/bin/sh\nif [ "$2" = '--help' ]; then echo '${usage}'; exit 0; fi\nprintf '%s\\n%s' "$1" "$CODEX_HOME"\n`,
+        );
+        yield* fs.chmod(binaryPath, 0o755);
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("codex-wrapper"),
+          displayName: "Codex wrapper",
+          enabled: false,
+          environment: [],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            binaryPath,
+            homePath: sharedHome,
+            shadowHomePath: NodePath.join(tempDir, "shadow"),
+          },
+        });
+        const capabilities = yield* instance.snapshot.resolveMaintenance({ fresh: true });
+        if (!supported) {
+          expect(capabilities.update).toBeNull();
+          return;
+        }
+        expect(capabilities.update).toMatchObject({
+          executable: binaryPath,
+          args: ["update"],
+          lockKey: "codex-native",
+          env: { CODEX_HOME: sharedHome },
+        });
+        const update = capabilities.update!;
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const child = yield* spawner.spawn(
+          ChildProcess.make(update.executable, update.args, {
+            env: update.env,
+            extendEnv: true,
+          }),
+        );
+        const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.runCollect);
+        expect(output.join("")).toBe(`update\n${sharedHome}`);
+        expect(Number(yield* child.exitCode)).toBe(0);
+      }).pipe(Effect.scoped),
+    );
+  }
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>
@@ -136,7 +189,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     it.effect.skipIf(windowsHost)(fixture.name, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-installer-" });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-installer-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const installPath = NodePath.join(tempDir, ...fixture.installSegments);
         const realBinaryPath = NodePath.join(
           installPath,
@@ -268,7 +323,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     (fixture) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-mise-shim-" });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-mise-shim-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const brewPrefix = NodePath.join(tempDir, "homebrew");
         const brewPath = NodePath.join(brewPrefix, "bin", "brew");
         const misePath = NodePath.join(brewPrefix, "Cellar", "mise", "2026.9.1", "bin", "mise");
