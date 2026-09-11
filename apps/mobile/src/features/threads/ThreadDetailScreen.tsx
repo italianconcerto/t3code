@@ -1,4 +1,5 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import { ManagedAgentsNavigation } from "./ManagedAgentsNavigation";
 import {
   appendCodexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
@@ -916,6 +917,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                <ManagedAgentsNavigation
+                  key={selectedThreadKey}
+                  environmentId={props.environmentId}
+                  threadId={props.selectedThread.id}
+                />
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}

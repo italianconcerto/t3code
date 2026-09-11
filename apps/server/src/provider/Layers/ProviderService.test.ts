@@ -5215,27 +5215,25 @@ describe("agent browser access", () => {
   // Credential issuance is the observable that matters: it is the only place a
   // credential is minted, and `/mcp` accepts nothing else, so withholding it is
   // what actually denies every provider and external MCP client.
-  it.effect("requests a goal-only MCP credential when agent browser access is off", () =>
+  it.effect("requests goal and agents capabilities when agent browser access is off", () =>
     Effect.gen(function* () {
       const issued = yield* startSessionWith(false, asThreadId("thread-browser-off"));
 
       assert.deepEqual(issued, [
-        { threadId: asThreadId("thread-browser-off"), capabilities: ["goal"] },
+        { threadId: asThreadId("thread-browser-off"), capabilities: ["agents", "goal"] },
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect(
-    "replaces an old credential with a goal-only credential when browser access is off",
-    () =>
-      Effect.gen(function* () {
-        const threadId = asThreadId("thread-browser-revoke");
-        revokedThreads.length = 0;
+  it.effect("keeps goal and agents capabilities when browser access is off", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-revoke");
+      revokedThreads.length = 0;
 
-        yield* startSessionWith(false, threadId);
+      yield* startSessionWith(false, threadId);
 
-        assert.deepEqual(revokedThreads, []);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      assert.deepEqual(revokedThreads, []);
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("requests an MCP credential when agent browser access is on", () =>
@@ -5244,7 +5242,7 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith(true, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["goal", "preview"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["agents", "goal", "preview"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5253,7 +5251,7 @@ describe("agent browser access", () => {
       const threadId = asThreadId("thread-project-browser-off");
       revokedThreads.length = 0;
       const issued = yield* startSessionWith(true, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["goal"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["agents", "goal"] }]);
       assert.deepEqual(revokedThreads, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -5262,7 +5260,7 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith(false, threadId, true);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["goal", "preview"] }]);
+      assert.deepEqual(issued, [{ threadId, capabilities: ["agents", "goal", "preview"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

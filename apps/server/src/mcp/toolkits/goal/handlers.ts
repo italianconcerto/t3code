@@ -7,6 +7,8 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { GoalToolkit, GoalToolError } from "./tools.ts";
 
 const toResult = (goal: ManagedGoals.ManagedGoal, now: number, message: string) => ({
+  goalId: goal.goalId,
+  turnNumber: goal.turnNumber,
   objective: goal.objective,
   status: goal.status,
   tokensUsed: goal.tokensUsed,
@@ -40,56 +42,66 @@ export const goalToolkitHandlers = {
       const { goal } = yield* requireGoal();
       return toResult(goal, yield* Clock.currentTimeMillis, "Goal state loaded.");
     }),
-  t3_update_goal: ({ status, reason }) =>
+  t3_update_goal: ({ goalId, turnNumber, status, reason }) =>
     Effect.gen(function* () {
       const { goal, repository } = yield* requireGoal();
       const now = yield* Clock.currentTimeMillis;
-      if (goal.status !== "active") {
-        return toResult(goal, now, `Goal is already ${goal.status}.`);
-      }
-      if (status === "complete") {
-        const completed = {
-          ...goal,
-          status: "complete" as const,
-          awaitingTurn: false,
-          blockedAttempts: 0,
-          blockedReason: null,
-          updatedAtMs: now,
-        };
-        yield* repository
-          .upsert(completed)
-          .pipe(
-            Effect.mapError(
-              () => new GoalToolError({ message: "Could not complete the persistent goal." }),
-            ),
-          );
-        return toResult(completed, now, "Goal completed.");
-      }
-
       const blocker = reason?.trim() || "Unspecified blocker";
-      const sameBlocker = goal.blockedReason === blocker;
-      const blockedAttempts = sameBlocker ? goal.blockedAttempts + 1 : 1;
-      const blocked = {
-        ...goal,
-        status: blockedAttempts >= 3 ? ("blocked" as const) : ("active" as const),
-        awaitingTurn: blockedAttempts >= 3 ? false : goal.awaitingTurn,
-        blockedAttempts,
-        blockedReason: blocker,
-        updatedAtMs: now,
-      };
-      yield* repository
-        .upsert(blocked)
+      const updated = yield* repository
+        .modify(goal.threadId, (current) => {
+          if (
+            current.goalId !== goalId ||
+            current.turnNumber !== turnNumber ||
+            current.status !== "active"
+          )
+            return current;
+          if (status === "complete")
+            return {
+              ...current,
+              status: "complete",
+              awaitingTurn: false,
+              blockedAttempts: 0,
+              blockedReason: null,
+              lastBlockedTurn: -1,
+              updatedAtMs: now,
+            };
+          if (current.lastBlockedTurn === turnNumber) return current;
+          const consecutive =
+            current.lastBlockedTurn === turnNumber - 1 && current.blockedReason === blocker;
+          const blockedAttempts = consecutive ? current.blockedAttempts + 1 : 1;
+          return {
+            ...current,
+            blockedAttempts,
+            blockedReason: blocker,
+            lastBlockedTurn: turnNumber,
+            status: blockedAttempts >= 3 ? "blocked" : "active",
+            awaitingTurn: blockedAttempts >= 3 ? false : current.awaitingTurn,
+            updatedAtMs: now,
+          };
+        })
         .pipe(
           Effect.mapError(
             () => new GoalToolError({ message: "Could not update the persistent goal." }),
           ),
         );
+      if (
+        Option.isNone(updated) ||
+        updated.value.goalId !== goalId ||
+        updated.value.turnNumber !== turnNumber
+      ) {
+        return yield* new GoalToolError({
+          message: "Goal or turn changed. This stale report was not applied.",
+        });
+      }
+      const blocked = updated.value;
       return toResult(
         blocked,
         now,
         blocked.status === "blocked"
-          ? "Goal blocked after three consecutive reports of the same blocker."
-          : `Blocker recorded (${blockedAttempts}/3). Continue with any remaining useful work.`,
+          ? "Goal blocked after three consecutive turns reporting the same blocker."
+          : blocked.status === "active"
+            ? `Blocker recorded (${blocked.blockedAttempts}/3 distinct turns). Continue with any remaining useful work.`
+            : `Goal is ${blocked.status}.`,
       );
     }),
 } satisfies Parameters<typeof GoalToolkit.toLayer>[0];

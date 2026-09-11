@@ -230,11 +230,38 @@ const resolveClientFilePath = Effect.fn("AntigravityAdapter.resolveClientFilePat
   }) {
     const { path } = input;
     const resolved = path.resolve(input.requestPath);
-    // Follow symlinks on the parent so a link out of the workspace cannot escape it.
-    const parent = yield* input.fileSystem
-      .realPath(path.dirname(resolved))
-      .pipe(Effect.orElseSucceed(() => path.dirname(resolved)));
-    const real = path.join(parent, path.basename(resolved));
+    // Canonicalize the closest existing ancestor, including the target itself.
+    // New nested paths must use the same canonical root as existing files (for
+    // example /var and /private/var on macOS).
+    let ancestor = resolved;
+    let suffix = "";
+    let real: string;
+    while (true) {
+      const canonical = yield* input.fileSystem.realPath(ancestor).pipe(
+        Effect.map(Option.some),
+        Effect.catch((error) =>
+          error.reason._tag === "NotFound"
+            ? Effect.succeed(Option.none<string>())
+            : Effect.fail(
+                EffectAcpErrors.AcpRequestError.invalidParams(
+                  `Could not resolve path '${input.requestPath}'.`,
+                ),
+              ),
+        ),
+      );
+      if (Option.isSome(canonical)) {
+        real = path.join(canonical.value, suffix);
+        break;
+      }
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) {
+        return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+          `Could not resolve path '${input.requestPath}'.`,
+        );
+      }
+      suffix = path.join(path.basename(ancestor), suffix);
+      ancestor = parent;
+    }
     const roots = yield* Effect.forEach(input.allowedRoots, (root) =>
       input.fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
     );

@@ -895,7 +895,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
-      const capabilities = new Set<McpInvocationContext.McpCapability>(["goal"]);
+      const capabilities = new Set<McpInvocationContext.McpCapability>(["goal", "agents"]);
       if (yield* agentBrowserAccessEnabled(threadId)) capabilities.add("preview");
       const credential = yield* issueMcpCredential({
         threadId,

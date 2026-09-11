@@ -18,6 +18,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   CursorSettings,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -26,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
@@ -162,6 +164,59 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("passes thread-scoped T3 tools credentials across the ACP subprocess boundary", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const directory = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-mcp-transport-")),
+      );
+      const logPath = NodePath.join(directory, "requests.ndjson");
+      const wrapper = yield* Effect.promise(() =>
+        makeProbeWrapper(logPath, NodePath.join(directory, "argv.txt")),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapper } } });
+      for (const index of [0, 1, 2]) {
+        const threadId = ThreadId.make(`cursor-mcp-transport-${index}`);
+        if (index < 2)
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("mcp-test"),
+            threadId,
+            providerSessionId: `session-${index}`,
+            providerInstanceId: ProviderInstanceId.make("cursor"),
+            endpoint: `http://127.0.0.1:13774/mcp/${index}`,
+            authorizationHeader: `Bearer fake-cursor-${index}`,
+          });
+        try {
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: directory,
+            runtimeMode: "full-access",
+          });
+          yield* adapter.stopSession(threadId);
+        } finally {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }
+      }
+      const requests = yield* Effect.promise(() => readJsonLines(logPath));
+      const servers = requests
+        .filter((request) => request.method === "session/new")
+        .map((request) => (request.params as { mcpServers: unknown }).mcpServers);
+      assert.deepEqual(servers, [
+        ...[0, 1].map((index) => [
+          {
+            type: "http",
+            name: "t3-code",
+            url: `http://127.0.0.1:13774/mcp/${index}`,
+            headers: [{ name: "Authorization", value: `Bearer fake-cursor-${index}` }],
+          },
+        ]),
+        [],
+      ]);
+    }),
+  );
+
   it.effect("rejects a Cursor transport error returned as a successful assistant answer", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

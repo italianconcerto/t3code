@@ -111,17 +111,21 @@ provider supports it. Web and desktop also offer compaction from the context met
 
 ### Goals and recurring prompts
 
-Send `/goal Finish the migration` to start a persistent goal. Codex uses its native
-goal support and continues until the goal completes or becomes blocked, paused, or
-limited. For other providers, T3 Code includes the active objective in each future
-turn until it is paused or cleared; these managed goals are cleared when the server
-restarts. Use `/goal --budget 50000 Finish the migration` to set a token budget.
-Codex enforces that budget; other providers receive it as guidance because they
-do not expose native goal accounting.
+Send `/goal Finish the migration` to start a persistent goal managed by T3 Code.
+T3 includes the objective in subsequent turns and continues automatically until
+the agent confirms completion, work is paused or blocked, or a usage or budget
+limit is reached. The agent must have access to T3's goal tools to confirm
+completion. A normal final response does not complete the goal. Blocker reports
+must describe the same obstacle on three consecutive turns; repeated calls in
+one turn count only once. Provider failures can also stop continuation.
+
+Use `/goal --budget 50000 Finish the migration` to set a token budget. T3 counts
+the usage reported by the provider and checks the budget after each turn, so a
+turn can exceed the remaining budget. Providers without usage reporting cannot
+enforce a precise token budget. Goals survive server restarts.
 `/goal` or `/goal status` shows progress; `/goal pause`, `/goal resume`, and
 `/goal clear` manage the goal. Clearing a goal removes the objective, not the
-conversation. Native goals require a Codex version with its goals feature enabled;
-unsupported Codex versions report an error instead of receiving the command as a prompt.
+conversation. Resuming a blocked goal starts a fresh blocker audit.
 
 Send `/loop 5m Check the build and report failures` to repeat a prompt in this
 thread. Omit the interval for a ten-minute interval. Units are `s`, `m`, `h`, and
@@ -131,11 +135,28 @@ one interval. Sending another `/loop` prompt replaces this thread's schedule.
 The thread's Stop action cancels future runs and interrupts current work.
 
 Loops run on the connected environment's server, even if you close the client.
-They expire after three days and are cleared when the server restarts. Busy
+They expire after three days and survive server restarts. Busy
 threads, pending approvals, and unanswered questions delay runs without building
 a backlog. Archiving or settling a thread cancels its loop. Runs use the thread's
 current model and permission mode. At most 50 threads can have an active loop.
 Send these commands without attachments.
+
+### Managed subagents
+
+Ask your agent to create a T3-managed subagent for a separate task. Each child has
+its own durable chat and can use a different configured provider, subscription,
+and model. Give it the context it needs; it does not share the parent's provider
+session.
+
+On web and desktop, open the Agents panel and select a managed child to read its
+messages, send new instructions, or stop it. Sending instructions to an idle or
+stopped child resumes work in that chat. Open its full chat for approvals, file
+changes, and model selection. On mobile, open Subagents from the parent chat and
+select the child; Parent chat returns to the parent.
+
+Subagents created natively by a provider are separate from T3-managed children
+and do not automatically gain these controls. Child chats share the project's
+checkout unless you place the work in separate projects or worktrees.
 
 ## Images and videos in messages
 

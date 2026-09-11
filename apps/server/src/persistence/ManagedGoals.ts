@@ -20,6 +20,9 @@ export type ManagedGoalStatus = typeof ManagedGoalStatus.Type;
 
 export const ManagedGoal = Schema.Struct({
   threadId: ThreadId,
+  goalId: Schema.String,
+  turnNumber: Schema.Int,
+  lastBlockedTurn: Schema.Int,
   objective: Schema.String,
   status: ManagedGoalStatus,
   tokenBudget: Schema.NullOr(Schema.Finite),
@@ -36,6 +39,9 @@ export type ManagedGoal = typeof ManagedGoal.Type;
 
 const ManagedGoalRow = Schema.Struct({
   threadId: Schema.String,
+  goalId: Schema.String,
+  turnNumber: Schema.Int,
+  lastBlockedTurn: Schema.Int,
   objective: Schema.Unknown,
   status: Schema.Unknown,
   tokenBudget: Schema.Unknown,
@@ -62,6 +68,10 @@ export class ManagedGoalRepository extends Context.Service<
       ManagedGoalRepositoryError
     >;
     readonly upsert: (goal: ManagedGoal) => Effect.Effect<void, ManagedGoalRepositoryError>;
+    readonly modify: (
+      threadId: ThreadId,
+      update: (current: ManagedGoal) => ManagedGoal,
+    ) => Effect.Effect<Option.Option<ManagedGoal>, ManagedGoalRepositoryError>;
     readonly delete: (threadId: ThreadId) => Effect.Effect<void, ManagedGoalRepositoryError>;
   }
 >()("t3/persistence/ManagedGoals/ManagedGoalRepository") {}
@@ -78,6 +88,9 @@ export const make = Effect.gen(function* () {
     sql`
       SELECT
         thread_id AS "threadId",
+        goal_id AS "goalId",
+        turn_number AS "turnNumber",
+        last_blocked_turn AS "lastBlockedTurn",
         objective,
         status,
         token_budget AS "tokenBudget",
@@ -99,8 +112,8 @@ export const make = Effect.gen(function* () {
       awaitingTurn: row.awaitingTurn === 1 || row.awaitingTurn === true,
     });
 
-  return ManagedGoalRepository.of({
-    get: (threadId) =>
+  const operations = {
+    get: (threadId: ThreadId) =>
       select("thread", threadId).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ManagedGoalRow))),
         Effect.flatMap((rows) =>
@@ -114,20 +127,25 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((rows) => Effect.forEach(rows, decodeRow)),
         Effect.mapError(mapError("ManagedGoalRepository.listActive")),
       ),
-    upsert: (goal) =>
+    upsert: (goal: ManagedGoal) =>
       sql`
         INSERT INTO managed_goals (
           thread_id, objective, status, token_budget, tokens_used, started_at_ms,
           updated_at_ms, awaiting_turn, blocked_attempts, blocked_reason
           , expected_provider_instance_id, expected_turn_id
+          , goal_id, turn_number, last_blocked_turn
         ) VALUES (
           ${goal.threadId}, ${goal.objective}, ${goal.status}, ${goal.tokenBudget},
           ${goal.tokensUsed}, ${goal.startedAtMs}, ${goal.updatedAtMs},
           ${goal.awaitingTurn ? 1 : 0}, ${goal.blockedAttempts}, ${goal.blockedReason},
-          ${goal.expectedProviderInstanceId}, ${goal.expectedTurnId}
+          ${goal.expectedProviderInstanceId}, ${goal.expectedTurnId},
+          ${goal.goalId}, ${goal.turnNumber}, ${goal.lastBlockedTurn}
         )
         ON CONFLICT(thread_id) DO UPDATE SET
           objective = excluded.objective,
+          goal_id = excluded.goal_id,
+          turn_number = excluded.turn_number,
+          last_blocked_turn = excluded.last_blocked_turn,
           status = excluded.status,
           token_budget = excluded.token_budget,
           tokens_used = excluded.tokens_used,
@@ -139,11 +157,26 @@ export const make = Effect.gen(function* () {
           blocked_attempts = excluded.blocked_attempts,
           blocked_reason = excluded.blocked_reason
       `.pipe(Effect.asVoid, Effect.mapError(mapError("ManagedGoalRepository.upsert"))),
-    delete: (threadId) =>
+    delete: (threadId: ThreadId) =>
       sql`DELETE FROM managed_goals WHERE thread_id = ${threadId}`.pipe(
         Effect.asVoid,
         Effect.mapError(mapError("ManagedGoalRepository.delete")),
       ),
+  };
+  return ManagedGoalRepository.of({
+    ...operations,
+    modify: (threadId, update) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const current = yield* operations.get(threadId);
+            if (Option.isNone(current)) return current;
+            const next = update(current.value);
+            if (next !== current.value) yield* operations.upsert(next);
+            return Option.some(next);
+          }),
+        )
+        .pipe(Effect.mapError(mapError("ManagedGoalRepository.modify"))),
   });
 });
 

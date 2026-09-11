@@ -108,25 +108,56 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
     P.isTagged(u, OPENCODE_RUNTIME_ERROR_TAG);
 }
 
+// SDK errors may carry the original request, including MCP bearer credentials.
+function safeDiagnostic(input: unknown, seen = new WeakSet<object>(), depth = 0): unknown {
+  if (P.isString(input)) {
+    return input
+      .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 [redacted]")
+      .replace(
+        /(["']?\b[\w-]*(?:authorization|cookie|password|secret|token|api[_-]?key)[\w-]*["']?\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&}\]]+)/giu,
+        "$1[redacted]",
+      )
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/giu, "$1[redacted]@");
+  }
+  if (!P.isObjectOrArray(input)) return input;
+  if (depth >= 12 || seen.has(input)) return "[omitted]";
+  seen.add(input);
+  if (Array.isArray(input)) return input.map((value) => safeDiagnostic(value, seen, depth + 1));
+  // Error.cause is non-enumerable but carries structured status used for recovery.
+  const fields =
+    input instanceof Error
+      ? { ...input, name: input.name, message: input.message, cause: input.cause }
+      : input;
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      /request|headers|authorization|cookie|password|secret|token|api[_-]?key/iu.test(key)
+        ? "[redacted]"
+        : safeDiagnostic(value, seen, depth + 1),
+    ]),
+  );
+}
+
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
 }
 
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
-  if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
+  if (OpenCodeRuntimeError.is(cause)) return String(safeDiagnostic(cause.detail));
+  if (cause instanceof Error && cause.message.trim().length > 0)
+    return String(safeDiagnostic(cause.message.trim()));
   if (cause && typeof cause === "object") {
     // SDK v2 throws { response, request, error? } shapes — extract what's useful
     const anyCause = cause as Record<string, unknown>;
     const status = (anyCause.response as { status?: number } | undefined)?.status;
     const body = anyCause.error ?? anyCause.data ?? anyCause.body;
-    const encodedBody = encodeJsonStringForDiagnostics(body ?? cause);
+    const encodedBody = encodeJsonStringForDiagnostics(safeDiagnostic(body ?? cause));
     if (encodedBody) {
       return `status=${status ?? "?"} body=${encodedBody}`;
     }
   }
-  return String(cause);
+  return String(safeDiagnostic(cause));
 }
 
 export const runOpenCodeSdk = <A>(
@@ -136,7 +167,11 @@ export const runOpenCodeSdk = <A>(
   Effect.tryPromise({
     try: fn,
     catch: (cause) =>
-      new OpenCodeRuntimeError({ operation, detail: openCodeRuntimeErrorDetail(cause), cause }),
+      new OpenCodeRuntimeError({
+        operation,
+        detail: openCodeRuntimeErrorDetail(cause),
+        cause: safeDiagnostic(cause),
+      }),
   }).pipe(Effect.withSpan(`opencode.${operation}`));
 
 export const verifyOpenCodeServerVersion = Effect.fn("verifyOpenCodeServerVersion")(function* (

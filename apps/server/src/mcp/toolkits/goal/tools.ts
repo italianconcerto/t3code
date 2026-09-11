@@ -9,6 +9,8 @@ export class GoalToolError extends Schema.TaggedError<GoalToolError>()("GoalTool
 }) {}
 
 export const GoalToolResult = Schema.Struct({
+  goalId: Schema.String,
+  turnNumber: Schema.Int,
   objective: Schema.String,
   status: ManagedGoals.ManagedGoalStatus,
   tokensUsed: Schema.Finite,
@@ -38,10 +40,12 @@ const GetGoalTool = Tool.make("t3_get_goal", {
 
 const UpdateGoalTool = Tool.make("t3_update_goal", {
   description:
-    "Finish the T3-managed persistent goal or report a genuine blocker. Use complete only after the objective is achieved and verified. Use blocked only when the same blocker prevents further progress; T3 requires three consecutive blocked reports before stopping. Do not call this merely because one turn is ending: omit it and T3 will continue automatically.",
+    "Finish the T3-managed persistent goal or report a genuine blocker. Pass goalId and turnNumber from this turn's goal instructions; stale turns are rejected. Use complete only after verification. Blocking requires the same blocker on three consecutive distinct turns, not three calls. Do not call this merely because one turn is ending: omit it and T3 will continue automatically.",
   parameters: Schema.Struct({
+    goalId: Schema.String,
+    turnNumber: Schema.Int,
     status: Schema.Literals(["complete", "blocked"]),
-    reason: Schema.optional(Schema.String),
+    reason: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   success: GoalToolResult,
   failure: GoalToolError,

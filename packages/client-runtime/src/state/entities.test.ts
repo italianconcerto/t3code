@@ -206,6 +206,7 @@ describe("environment entity projections", () => {
       ...THREAD_SHELL,
       environmentId: ENVIRONMENT_ID,
       title: "Cached thread",
+      parentThreadId: ThreadId.make("stale-parent"),
       branch: "stale-branch",
       worktreePath: "/repo/stale-worktree",
       activeOrderKey: "t",
@@ -220,6 +221,7 @@ describe("environment entity projections", () => {
       ...THREAD_SHELL,
       environmentId: ENVIRONMENT_ID,
       title: "Current thread",
+      parentThreadId: ThreadId.make("current-parent"),
       branch: "current-branch",
       worktreePath: "/repo/current-worktree",
       activeOrderKey: "f",
@@ -230,12 +232,16 @@ describe("environment entity projections", () => {
 
     expect(merged).toMatchObject({
       title: "Current thread",
+      parentThreadId: ThreadId.make("current-parent"),
       branch: "current-branch",
       worktreePath: "/repo/current-worktree",
       activeOrderKey: "f",
       unsettledAt: "2026-03-09T12:00:00.000Z",
     });
     expect(merged?.messages).toBe(messages);
+    expect(
+      mergeEnvironmentThread(detail, { ...shell, parentThreadId: undefined })?.parentThreadId,
+    ).toBeUndefined();
   });
 
   it("preserves untouched project and thread identities across unrelated shell updates", () => {

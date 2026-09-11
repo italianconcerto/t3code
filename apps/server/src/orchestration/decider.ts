@@ -204,6 +204,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  if (
+    (command.type === "thread.turn.start" || command.type === "thread.turn.interrupt") &&
+    command.managedChild !== undefined
+  ) {
+    const expected = command.managedChild;
+    const child = yield* requireThreadNotArchived({
+      readModel,
+      command,
+      threadId: command.threadId,
+    });
+    const parent = yield* requireThreadNotArchived({
+      readModel,
+      command,
+      threadId: expected.parentThreadId,
+    });
+    if (
+      child.deletedAt !== null ||
+      parent.deletedAt !== null ||
+      child.parentThreadId !== parent.id ||
+      child.projectId !== parent.projectId ||
+      child.createdAt !== expected.childCreatedAt ||
+      parent.createdAt !== expected.parentCreatedAt
+    ) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "Managed child ownership or lifecycle changed before the command was applied.",
+      });
+    }
+  }
   switch (command.type) {
     case "project.create": {
       yield* requireProjectAbsent({
@@ -314,10 +343,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       if (activeThreads.length > 0) {
+        // Delete leaves first so forced project deletion preserves child ownership
+        // until every descendant has been removed. Iterative for deep agent trees.
+        const byId = new Map(activeThreads.map((thread) => [thread.id, thread]));
+        const childCounts = new Map(activeThreads.map((thread) => [thread.id, 0]));
+        for (const thread of activeThreads) {
+          if (thread.parentThreadId !== undefined && byId.has(thread.parentThreadId)) {
+            childCounts.set(
+              thread.parentThreadId,
+              (childCounts.get(thread.parentThreadId) ?? 0) + 1,
+            );
+          }
+        }
+        const deletionOrder = activeThreads.filter((thread) => childCounts.get(thread.id) === 0);
+        for (let index = 0; index < deletionOrder.length; index++) {
+          const parentId = deletionOrder[index]?.parentThreadId;
+          if (parentId === undefined) continue;
+          const parent = byId.get(parentId);
+          if (parent === undefined) continue;
+          const remaining = (childCounts.get(parentId) ?? 0) - 1;
+          childCounts.set(parentId, remaining);
+          if (remaining === 0) deletionOrder.push(parent);
+        }
+        if (deletionOrder.length !== activeThreads.length) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Cannot delete a project with cyclic child thread ancestry.",
+          });
+        }
         return yield* decideCommandSequence({
           readModel,
           commands: [
-            ...activeThreads.map(
+            ...deletionOrder.map(
               (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
                 type: "thread.delete",
                 commandId: command.commandId,
@@ -350,6 +407,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
+      let ancestorId = command.parentThreadId;
+      const ancestors = new Set([command.threadId]);
+      while (ancestorId !== undefined) {
+        if (ancestors.has(ancestorId)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Child thread ancestry must not contain a cycle.",
+          });
+        }
+        ancestors.add(ancestorId);
+        const parent = yield* requireThreadNotArchived({
+          readModel,
+          command,
+          threadId: ancestorId,
+        });
+        if (parent.deletedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A child thread cannot belong to a deleted parent.",
+          });
+        }
+        if (parent.projectId !== command.projectId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A child thread must belong to its parent's project.",
+          });
+        }
+        ancestorId = parent.parentThreadId;
+      }
       yield* requireProject({
         readModel,
         command,
@@ -372,6 +458,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          ...(command.parentThreadId ? { parentThreadId: command.parentThreadId } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -390,6 +477,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        readModel.threads.some(
+          (thread) => thread.parentThreadId === command.threadId && thread.deletedAt === null,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Delete child threads before deleting their parent.",
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -412,6 +509,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        readModel.threads.some(
+          (thread) =>
+            thread.parentThreadId === command.threadId &&
+            thread.deletedAt === null &&
+            thread.archivedAt === null,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Archive child threads before archiving their parent.",
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -430,11 +540,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.unarchive": {
-      yield* requireThreadArchived({
+      const thread = yield* requireThreadArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (thread.parentThreadId !== undefined) {
+        const parent = yield* requireThreadNotArchived({
+          readModel,
+          command,
+          threadId: thread.parentThreadId,
+        });
+        if (parent.deletedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Cannot restore a child thread whose parent was deleted.",
+          });
+        }
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({

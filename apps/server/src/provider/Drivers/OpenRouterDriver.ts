@@ -25,16 +25,18 @@ function isOpenRouterModel(modelSelection: ModelSelection | undefined): boolean 
   return modelSelection === undefined || modelSelection.model.startsWith("openrouter/");
 }
 
-const validateAdapterModel = (operation: string, modelSelection: ModelSelection | undefined) =>
-  isOpenRouterModel(modelSelection)
-    ? Effect.void
-    : Effect.fail(
-        new ProviderAdapterValidationError({
-          provider: DRIVER_KIND,
-          operation,
-          issue: `OpenRouter model selection must start with 'openrouter/', received '${modelSelection?.model}'.`,
-        }),
-      );
+const validateAdapterModel = Effect.fn("OpenRouter.validateAdapterModel")(function* (
+  operation: string,
+  modelSelection: ModelSelection | undefined,
+) {
+  if (!isOpenRouterModel(modelSelection)) {
+    return yield* new ProviderAdapterValidationError({
+      provider: DRIVER_KIND,
+      operation,
+      issue: `OpenRouter model selection must start with 'openrouter/', received '${modelSelection?.model}'.`,
+    });
+  }
+});
 
 export function withOpenRouterIdentity(
   adapter: ProviderInstance["adapter"],
@@ -84,15 +86,17 @@ export function withOpenRouterIdentity(
 export function withOpenRouterTextGeneration(
   textGeneration: ProviderInstance["textGeneration"],
 ): ProviderInstance["textGeneration"] {
-  const validate = (operation: string, modelSelection: ModelSelection) =>
-    isOpenRouterModel(modelSelection)
-      ? Effect.void
-      : Effect.fail(
-          new TextGenerationError({
-            operation,
-            detail: `OpenRouter model selection must start with 'openrouter/', received '${modelSelection.model}'.`,
-          }),
-        );
+  const validate = Effect.fn("OpenRouter.validateTextGenerationModel")(function* (
+    operation: string,
+    modelSelection: ModelSelection,
+  ) {
+    if (!isOpenRouterModel(modelSelection)) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: `OpenRouter model selection must start with 'openrouter/', received '${modelSelection.model}'.`,
+      });
+    }
+  });
   return {
     generateCommitMessage: (input) =>
       validate("generateCommitMessage", input.modelSelection).pipe(

@@ -19,6 +19,8 @@ import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { AgentsToolkitHandlersLive } from "./toolkits/agents/handlers.ts";
+import { AgentsToolkit } from "./toolkits/agents/tools.ts";
 import { GoalToolkitHandlersLive } from "./toolkits/goal/handlers.ts";
 import { GoalToolkit } from "./toolkits/goal/tools.ts";
 import {
@@ -438,6 +440,10 @@ const GoalToolkitRegistrationLive = McpServer.toolkit(GoalToolkit).pipe(
   Layer.provide(GoalToolkitHandlersLive),
 );
 
+export const AgentsToolkitRegistrationLive = McpServer.toolkit(AgentsToolkit).pipe(
+  Layer.provide(AgentsToolkitHandlersLive),
+);
+
 export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewStandardToolkitRegistrationLive,
   PreviewSnapshotRegistrationLive,
@@ -453,4 +459,5 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   GoalToolkitRegistrationLive,
+  AgentsToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

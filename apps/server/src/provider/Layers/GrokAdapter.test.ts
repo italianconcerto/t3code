@@ -17,6 +17,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   GrokSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -26,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   grokPromptSettlementBelongsToContext,
   isGrokEnterPlanModeToolCall,
@@ -212,6 +214,52 @@ it("requires a settlement to match the live Grok turn", () => {
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("passes thread-scoped T3 tools credentials across the ACP subprocess boundary", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-mcp-transport-")),
+      );
+      const logPath = NodePath.join(directory, "requests.ndjson");
+      const wrapper = yield* Effect.promise(() =>
+        makeMockGrokWrapper({ T3_ACP_REQUEST_LOG_PATH: logPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapper);
+      for (const index of [0, 1, 2]) {
+        const threadId = ThreadId.make(`grok-mcp-transport-${index}`);
+        if (index < 2)
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("mcp-test"),
+            threadId,
+            providerSessionId: `session-${index}`,
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            endpoint: `http://127.0.0.1:13774/mcp/${index}`,
+            authorizationHeader: `Bearer fake-grok-${index}`,
+          });
+        try {
+          yield* adapter.startSession({ threadId, cwd: directory, runtimeMode: "full-access" });
+          yield* adapter.stopSession(threadId);
+        } finally {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }
+      }
+      const requests = yield* Effect.promise(() => readJsonLines(logPath));
+      const servers = requests
+        .filter((request) => request.method === "session/new")
+        .map((request) => (request.params as { mcpServers: unknown }).mcpServers);
+      assert.deepEqual(servers, [
+        ...[0, 1].map((index) => [
+          {
+            type: "http",
+            name: "t3-code",
+            url: `http://127.0.0.1:13774/mcp/${index}`,
+            headers: [{ name: "Authorization", value: `Bearer fake-grok-${index}` }],
+          },
+        ]),
+        [],
+      ]);
+    }),
+  );
+
   it.effect("sends runtime context with the current model without changing saved prompts", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-runtime-context");

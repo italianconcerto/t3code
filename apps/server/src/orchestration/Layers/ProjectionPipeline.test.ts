@@ -20,6 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
@@ -3977,6 +3978,271 @@ const engineLayer = it.layer(
     Layer.provideMerge(NodeServices.layer),
   ),
 );
+
+engineLayer("Managed child thread linkage", (it) => {
+  it.effect("force-deletes a project with nested children in leaf-first order", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const createdAt = "2026-09-10T00:00:00.000Z";
+      const projectId = ProjectId.make("child-force-project");
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("child-force-project"),
+        projectId,
+        title: "Nested children",
+        workspaceRoot: "/tmp/child-force-project",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      const ids = ["force-parent", "force-child", "force-grandchild"].map((id) =>
+        ThreadId.make(id),
+      );
+      for (const [index, threadId] of ids.entries()) {
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create-${threadId}`),
+          threadId,
+          projectId,
+          ...(index > 0 ? { parentThreadId: ids[index - 1] } : {}),
+          title: threadId,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+      }
+      const before = yield* engine.latestSequence;
+      yield* engine.dispatch({
+        type: "project.delete",
+        commandId: CommandId.make("force-delete-child-project"),
+        projectId,
+        force: true,
+      });
+      const events = yield* engine.readEvents(before).pipe(Stream.runCollect);
+      assert.deepEqual(
+        events.map((event) => [event.type, event.aggregateId]),
+        [
+          ["thread.deleted", ids[2]],
+          ["thread.deleted", ids[1]],
+          ["thread.deleted", ids[0]],
+          ["project.deleted", projectId],
+        ],
+      );
+      const snapshot = yield* query.getShellSnapshot();
+      assert.equal(
+        snapshot.projects.some((project) => project.id === projectId),
+        false,
+      );
+      assert.equal(
+        snapshot.threads.some((thread) => thread.projectId === projectId),
+        false,
+      );
+    }),
+  );
+  it.effect("preserves child ownership across events, snapshots, and later updates", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-10T00:00:00.000Z";
+      const projectId = ProjectId.make("child-link-project");
+      const parentThreadId = ThreadId.make("child-link-parent");
+      const threadId = ThreadId.make("child-link-child");
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("child-link-project"),
+        projectId,
+        title: "Child threads",
+        workspaceRoot: "/tmp/child-link",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      const create = (id: ThreadId) => ({
+        type: "thread.create" as const,
+        commandId: CommandId.make(`create-${id}`),
+        threadId: id,
+        projectId,
+        title: id,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+        runtimeMode: "approval-required" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch(create(parentThreadId));
+      yield* engine.dispatch({
+        ...create(threadId),
+        parentThreadId,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "test-child-model",
+        },
+      });
+      yield* engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("rename-child"),
+        threadId,
+        title: "Review child",
+      });
+      const snapshot = yield* query.getSnapshot();
+      assert.equal(
+        snapshot.threads.find((thread) => thread.id === threadId)?.parentThreadId,
+        parentThreadId,
+      );
+      assert.equal(
+        (yield* query.getShellSnapshot()).threads.find((thread) => thread.id === threadId)
+          ?.parentThreadId,
+        parentThreadId,
+      );
+      assert.equal(
+        Option.getOrThrow(yield* query.getThreadShellById(threadId)).parentThreadId,
+        parentThreadId,
+      );
+      assert.equal(
+        Option.getOrThrow(yield* query.getThreadDetailById(threadId)).parentThreadId,
+        parentThreadId,
+      );
+      const rows =
+        yield* sql`SELECT parent_thread_id FROM projection_threads WHERE thread_id = ${threadId}`;
+      assert.deepEqual(rows, [{ parent_thread_id: parentThreadId }]);
+      const missing = yield* engine
+        .dispatch({
+          ...create(ThreadId.make("missing-parent-child")),
+          parentThreadId: ThreadId.make("missing-parent"),
+        })
+        .pipe(Effect.exit);
+      assert.equal(missing._tag, "Failure");
+      const self = yield* engine
+        .dispatch({
+          ...create(ThreadId.make("self-child")),
+          parentThreadId: ThreadId.make("self-child"),
+        })
+        .pipe(Effect.exit);
+      assert.equal(self._tag, "Failure");
+      const deletedParentId = ThreadId.make("deleted-child-parent");
+      yield* engine.dispatch(create(deletedParentId));
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("delete-child-parent"),
+        threadId: deletedParentId,
+      });
+      assert.equal(
+        (yield* engine
+          .dispatch({
+            ...create(ThreadId.make("deleted-parent-child")),
+            parentThreadId: deletedParentId,
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* engine
+          .dispatch({
+            ...create(deletedParentId),
+            commandId: CommandId.make("recreate-deleted-self-parent"),
+            parentThreadId: deletedParentId,
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      const otherProjectId = ProjectId.make("child-link-other-project");
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("child-link-other-project"),
+        projectId: otherProjectId,
+        title: "Other project",
+        workspaceRoot: "/tmp/child-link-other",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      const crossProject = yield* engine
+        .dispatch({
+          ...create(ThreadId.make("cross-project-child")),
+          projectId: otherProjectId,
+          parentThreadId,
+        })
+        .pipe(Effect.exit);
+      assert.equal(crossProject._tag, "Failure");
+      assert.equal(
+        (yield* engine
+          .dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make("reject-delete-linked-parent"),
+            threadId: parentThreadId,
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* engine
+          .dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("reject-archive-linked-parent"),
+            threadId: parentThreadId,
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("archive-linked-child"),
+        threadId,
+      });
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("archive-child-parent"),
+        threadId: parentThreadId,
+      });
+      const archivedParent = yield* engine
+        .dispatch({
+          ...create(ThreadId.make("archived-parent-child")),
+          parentThreadId,
+        })
+        .pipe(Effect.exit);
+      assert.equal(archivedParent._tag, "Failure");
+      assert.equal(
+        (yield* engine
+          .dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make("reject-restore-linked-child"),
+            threadId,
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      yield* engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("restore-linked-parent"),
+        threadId: parentThreadId,
+      });
+      yield* engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("restore-linked-child"),
+        threadId,
+      });
+      assert.equal(Option.getOrThrow(yield* query.getThreadShellById(threadId)).archivedAt, null);
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("delete-linked-child"),
+        threadId,
+      });
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("delete-linked-parent"),
+        threadId: parentThreadId,
+      });
+      assert.equal(Option.isNone(yield* query.getThreadShellById(parentThreadId)), true);
+      assert.equal(
+        Option.isNone(yield* query.getThreadShellById(ThreadId.make("cross-project-child"))),
+        true,
+      );
+    }),
+  );
+});
 
 engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
   it.effect("projects dispatched engine events immediately", () =>

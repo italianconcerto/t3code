@@ -144,7 +144,6 @@ import {
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapHitStripWidth,
   resolveTimelineMinimapIndexFromPointer,
-  resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
@@ -981,11 +980,7 @@ function resolveTimelineRowHeight(state: TimelinePositionState, rowIndex: number
   return typeof height === "number" && Number.isFinite(height) ? height : null;
 }
 
-function timelineMinimapEventTargetsPreview(target: EventTarget): boolean {
-  return target instanceof Element && target.closest("[data-minimap-preview]") !== null;
-}
-
-function TimelineMinimap({
+export function TimelineMinimap({
   hasPersistentGutter,
   hitStripWidth,
   currentIndex,
@@ -1079,7 +1074,7 @@ function TimelineMinimap({
           )}
           style={{
             height: resolveTimelineMinimapHeightStyle(items.length),
-            width: resolveTimelineMinimapInteractiveWidth(hitStripWidth, activeItem !== null),
+            width: hitStripWidth,
           }}
         >
           <TimelineMinimapNavigationButton
@@ -1094,9 +1089,6 @@ function TimelineMinimap({
             className="absolute inset-y-0 left-0 w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
             onBlur={() => setActiveIndex(null)}
             onClick={(event) => {
-              if (timelineMinimapEventTargetsPreview(event.target)) {
-                return;
-              }
               const nextIndex = resolveActiveIndexFromPointer(event);
               const selectedItem = nextIndex === null ? null : (items[nextIndex] ?? null);
               if (selectedItem) {
@@ -1128,9 +1120,6 @@ function TimelineMinimap({
             onMouseLeave={() => setActiveIndex(null)}
             onMouseMove={updateActiveIndexFromPointer}
             onMouseDown={(event) => {
-              if (timelineMinimapEventTargetsPreview(event.target)) {
-                return;
-              }
               event.preventDefault();
             }}
             type="button"
@@ -1169,9 +1158,8 @@ function TimelineMinimap({
             })}
             {activeItem ? (
               <span
-                className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"
+                className="pointer-events-none absolute left-8 w-80 select-none"
                 data-minimap-preview
-                onMouseMove={(event) => event.stopPropagation()}
                 style={{
                   top: `${activeTopPercent}%`,
                   transform: `translateY(${activeTooltipTranslate})`,

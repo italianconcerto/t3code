@@ -83,6 +83,18 @@ const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalReques
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 
+// Exercise the common orchestration contract for every built-in driver. This
+// matrix uses a mocked ProviderService; it does not prove native MCP delivery.
+const automationModels = [
+  { instanceId: "codex", model: "gpt-5-codex" },
+  { instanceId: "claudeAgent", model: "claude-sonnet-4" },
+  { instanceId: "cursor", model: "auto" },
+  { instanceId: "grok", model: "grok-code-fast-1" },
+  { instanceId: "opencode", model: "opencode/test-model" },
+  { instanceId: "antigravity", model: "test-model" },
+  { instanceId: "openrouter", model: "openrouter/test/model" },
+].map(({ instanceId, model }) => ({ instanceId: ProviderInstanceId.make(instanceId), model }));
+
 const assistantQuoteText = "Retain the reconnect backoff.";
 const assistantCitation = {
   version: 1 as const,
@@ -215,6 +227,7 @@ describe("ProviderCommandReactor", () => {
         };
     readonly serverActivation?: Effect.Effect<void>;
     readonly beforeReadySessionDispatch?: () => Effect.Effect<void>;
+    readonly beforeGoalContinuationDispatch?: () => Effect.Effect<void>;
     readonly compactThreadEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
@@ -509,6 +522,14 @@ describe("ProviderCommandReactor", () => {
           readThreadEvents: engine.readThreadEvents,
           getThreadReplayStats: engine.getThreadReplayStats,
           dispatch: (command) => {
+            if (
+              command.type === "thread.turn.start" &&
+              command.commandId.startsWith("server:goal-turn:")
+            ) {
+              return (input?.beforeGoalContinuationDispatch?.() ?? Effect.void).pipe(
+                Effect.andThen(engine.dispatch(command)),
+              );
+            }
             if (command.type === "thread.title.regeneration.complete") {
               titleRegenerationCompletionDispatchAttempts += 1;
               if (
@@ -711,12 +732,18 @@ describe("ProviderCommandReactor", () => {
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
             const rows = yield* sql<{
+              readonly goalId: string;
+              readonly turnNumber: number;
+              readonly status: string;
               readonly tokensUsed: number;
               readonly awaitingTurn: number;
               readonly expectedProviderInstanceId: string | null;
               readonly expectedTurnId: string | null;
             }>`
               SELECT
+                goal_id AS "goalId",
+                turn_number AS "turnNumber",
+                status,
                 tokens_used AS "tokensUsed",
                 awaiting_turn AS "awaitingTurn",
                 expected_provider_instance_id AS "expectedProviderInstanceId",
@@ -726,6 +753,13 @@ describe("ProviderCommandReactor", () => {
             `;
             const row = rows[0];
             return row === undefined ? undefined : { ...row, awaitingTurn: row.awaitingTurn === 1 };
+          }),
+        ),
+      setManagedGoalStatus: (status: "complete" | "blocked") =>
+        runtime!.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`UPDATE managed_goals SET status = ${status}, awaiting_turn = 0 WHERE thread_id = 'thread-1'`;
           }),
         ),
       readScheduledLoop: (threadId = ThreadId.make("thread-1")) =>
@@ -1181,19 +1215,124 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
-  it("reports, pauses, resumes, and clears a persistent goal without provider prompts", async () => {
-    const harness = await createHarness();
-    await dispatchAutomation(harness, "/goal Finish migration", "goal-set");
-    await harness.drain();
-    for (const [index, command] of ["status", "pause", "resume", "clear", "status"].entries()) {
-      await dispatchAutomation(harness, `/goal ${command}`, `goal-control-${index}`);
+  it.each(automationModels)(
+    "$instanceId reports, pauses, resumes, and clears a persistent goal without provider prompts",
+    async (threadModelSelection) => {
+      const harness = await createHarness({ threadModelSelection });
+      await dispatchAutomation(harness, "/goal Finish migration", "goal-set");
       await harness.drain();
-    }
-    expect(harness.goal).not.toHaveBeenCalled();
-    expect(harness.sendTurn).toHaveBeenCalledOnce();
-    expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
-      expect.objectContaining({ summary: "No active goal." }),
-    );
+      for (const [index, command] of ["status", "pause", "resume", "clear", "status"].entries()) {
+        await dispatchAutomation(harness, `/goal ${command}`, `goal-control-${index}`);
+        await harness.drain();
+      }
+      expect(harness.goal).not.toHaveBeenCalled();
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
+      expect((await harness.readModel()).threads[0]?.activities).toContainEqual(
+        expect.objectContaining({ summary: "No active goal." }),
+      );
+    },
+  );
+
+  it.each(["complete", "blocked"] as const)(
+    "does not overwrite concurrent %s after continuation dispatch fails",
+    async (status) => {
+      const entered = Deferred.makeUnsafe<void>();
+      const release = Deferred.makeUnsafe<void>();
+      const harness = await createHarness({
+        testClock: true,
+        beforeGoalContinuationDispatch: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return yield* Effect.die("Injected continuation dispatch failure");
+          }),
+      });
+      const threadId = ThreadId.make("thread-1");
+      await dispatchAutomation(harness, "/goal Finish it", "race-goal-set");
+      await harness.drain();
+      await harness.emitRuntimeEvent({
+        type: "turn.completed",
+        eventId: EventId.make("race-goal-terminal"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: { state: "completed" },
+      });
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("race-session-ready"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      await harness.drain();
+      const tick = harness.runEffect(TestClock.adjust("1 second"));
+      await harness.runEffect(Deferred.await(entered));
+      await harness.setManagedGoalStatus(status);
+      await harness.runEffect(Deferred.succeed(release, undefined));
+      await tick;
+      await harness.drain();
+      expect((await harness.readManagedGoal())?.status).toBe(status);
+      expect(
+        (await harness.readModel()).threads[0]?.activities.some(
+          (activity) => activity.summary === "Goal blocked after continuation dispatch failed",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("invalidates old tool reports on resume without losing in-flight turn usage", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/goal Finish it", "resume-accounting-set");
+    await harness.drain();
+    const before = await harness.readManagedGoal();
+    expect(before?.expectedTurnId).toBe("turn-1");
+    await dispatchAutomation(harness, "/goal pause", "resume-accounting-pause");
+    await harness.drain();
+    await dispatchAutomation(harness, "/goal resume", "resume-accounting-resume");
+    await harness.drain();
+    const resumed = await harness.readManagedGoal();
+    expect(resumed?.goalId).toBe(before?.goalId);
+    expect(resumed?.turnNumber).toBe((before?.turnNumber ?? 0) + 1);
+    expect(resumed?.expectedTurnId).toBe("turn-1");
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("resume-accounting-terminal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        state: "completed",
+        tokenUsage: {
+          usageStatus: "complete",
+          usageScope: "main_agent",
+          hasSubagents: false,
+          inputTokens: 10,
+          outputTokens: 2,
+        },
+      },
+    });
+    await harness.drain();
+    expect(await harness.readManagedGoal()).toMatchObject({
+      tokensUsed: 12,
+      expectedTurnId: null,
+      status: "active",
+    });
   });
 
   it("runs managed goals on providers without a native goal API", async () => {
@@ -1222,61 +1361,64 @@ describe("ProviderCommandReactor", () => {
     expect(await harness.readPendingTurnStarts()).toEqual([]);
   });
 
-  it("continues an active goal after a successful provider turn", async () => {
-    const harness = await createHarness({ testClock: true });
-    const threadId = ThreadId.make("thread-1");
-    await dispatchAutomation(harness, "/goal Finish it", "goal-autocontinue");
-    await harness.drain();
-    expect(harness.sendTurn).toHaveBeenCalledOnce();
+  it.each(automationModels)(
+    "$instanceId continues an active goal after a successful provider turn",
+    async (threadModelSelection) => {
+      const harness = await createHarness({ testClock: true, threadModelSelection });
+      const threadId = ThreadId.make("thread-1");
+      await dispatchAutomation(harness, "/goal Finish it", "goal-autocontinue");
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
 
-    await harness.emitRuntimeEvent({
-      type: "turn.completed",
-      eventId: EventId.make("goal-turn-completed"),
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      threadId,
-      turnId: asTurnId("turn-1"),
-      createdAt: "2026-01-01T00:00:02.000Z",
-      payload: {
-        state: "completed",
-        tokenUsage: {
-          usageStatus: "complete",
-          usageScope: "main_agent",
-          hasSubagents: false,
-          inputTokens: 10,
-          outputTokens: 2,
-        },
-      },
-    });
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("goal-session-ready"),
+      await harness.emitRuntimeEvent({
+        type: "turn.completed",
+        eventId: EventId.make("goal-turn-completed"),
+        provider: ProviderDriverKind.make(threadModelSelection.instanceId),
+        providerInstanceId: threadModelSelection.instanceId,
         threadId,
-        session: {
-          threadId,
-          status: "ready",
-          providerName: "codex",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: "2026-01-01T00:00:02.000Z",
-        },
+        turnId: asTurnId("turn-1"),
         createdAt: "2026-01-01T00:00:02.000Z",
-      }),
-    );
-    await harness.drain();
-    await harness.runEffect(TestClock.adjust("1 second"));
-    await harness.drain();
+        payload: {
+          state: "completed",
+          tokenUsage: {
+            usageStatus: "complete",
+            usageScope: "main_agent",
+            hasSubagents: false,
+            inputTokens: 10,
+            outputTokens: 2,
+          },
+        },
+      });
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("goal-session-ready"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: threadModelSelection.instanceId,
+            providerInstanceId: threadModelSelection.instanceId,
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      await harness.drain();
+      await harness.runEffect(TestClock.adjust("1 second"));
+      await harness.drain();
 
-    expect(harness.sendTurn).toHaveBeenCalledTimes(2);
-    expect(harness.sendTurn).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        input: expect.stringContaining("Continue working toward the active goal"),
-      }),
-    );
-  });
+      expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+      expect(harness.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          input: expect.stringContaining("Continue working toward the active goal"),
+        }),
+      );
+    },
+  );
 
   it("processes a goal terminal emitted before sendTurn returns", async () => {
     const harness = await createHarness({
@@ -1466,22 +1608,25 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
-  it("runs a scheduled prompt after the interval and cancels future runs", async () => {
-    const harness = await createHarness({ testClock: true });
-    await dispatchAutomation(harness, "/loop 5s Check CI", "loop-start");
-    await harness.drain();
-    expect(harness.sendTurn).not.toHaveBeenCalled();
-    expect(await harness.readPendingTurnStarts()).toEqual([]);
-    await harness.runEffect(TestClock.adjust("5 seconds"));
-    await harness.drain();
-    expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: "Check CI" }));
-    await dispatchAutomation(harness, "/loop stop", "loop-stop");
-    await harness.drain();
-    const runs = harness.sendTurn.mock.calls.length;
-    await harness.runEffect(TestClock.adjust("10 seconds"));
-    await harness.drain();
-    expect(harness.sendTurn).toHaveBeenCalledTimes(runs);
-  });
+  it.each(automationModels)(
+    "$instanceId runs a scheduled prompt after the interval and cancels future runs",
+    async (threadModelSelection) => {
+      const harness = await createHarness({ testClock: true, threadModelSelection });
+      await dispatchAutomation(harness, "/loop 5s Check CI", "loop-start");
+      await harness.drain();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await harness.readPendingTurnStarts()).toEqual([]);
+      await harness.runEffect(TestClock.adjust("5 seconds"));
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: "Check CI" }));
+      await dispatchAutomation(harness, "/loop stop", "loop-stop");
+      await harness.drain();
+      const runs = harness.sendTurn.mock.calls.length;
+      await harness.runEffect(TestClock.adjust("10 seconds"));
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledTimes(runs);
+    },
+  );
 
   it("recovers a persisted loop when the reactor starts", async () => {
     const harness = await createHarness({ testClock: true, scheduledLoopBeforeStart: true });

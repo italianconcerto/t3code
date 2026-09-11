@@ -26,6 +26,7 @@ import type {
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -33,6 +34,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -72,6 +74,7 @@ const runtimeMock = {
     sessionCreateInputs: [] as Array<Record<string, unknown>>,
     createdSessionIds: [] as string[],
     authHeaders: [] as Array<string | null>,
+    mcpAddCalls: [] as Array<{ baseUrl: string; input: unknown }>,
     abortCalls: [] as string[],
     abortSignals: [] as AbortSignal[],
     abortImplementation: null as
@@ -136,6 +139,7 @@ const runtimeMock = {
     this.state.sessionCreateInputs.length = 0;
     this.state.createdSessionIds.length = 0;
     this.state.authHeaders.length = 0;
+    this.state.mcpAddCalls.length = 0;
     this.state.abortCalls.length = 0;
     this.state.abortSignals.length = 0;
     this.state.abortImplementation = null;
@@ -210,7 +214,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
     }),
   connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.gen(function* () {
-      const url = serverUrl ?? "http://127.0.0.1:4301";
+      const url = serverUrl || "http://127.0.0.1:4301";
       // Always register a finalizer so the closeCalls/closeError probes fire;
       // production attaches none for external servers.
       yield* Effect.addFinalizer(() =>
@@ -232,6 +236,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      mcp: {
+        add: async (input: unknown) => {
+          runtimeMock.state.mcpAddCalls.push({ baseUrl, input });
+          return { data: {} };
+        },
+      },
       session: {
         create: async (input: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
@@ -612,6 +622,52 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
 });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect(
+    "registers private T3 tools on owned servers without changing shared external servers",
+    () =>
+      Effect.gen(function* () {
+        for (const external of [false, true]) {
+          const adapter = yield* makeOpenCodeAdapter({
+            ...openCodeAdapterTestSettings,
+            serverUrl: external ? "http://127.0.0.1:9999" : "",
+          });
+          const threadId = asThreadId(`opencode-mcp-${external ? "external" : "owned"}`);
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("opencode-mcp-test"),
+            threadId,
+            providerSessionId: "opencode-test-session",
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            endpoint: "http://127.0.0.1:13774/mcp/opencode",
+            authorizationHeader: "Bearer fake-private-session",
+          });
+          try {
+            yield* adapter.startSession({
+              provider: ProviderDriverKind.make("opencode"),
+              threadId,
+              runtimeMode: "full-access",
+            });
+            yield* adapter.stopSession(threadId);
+          } finally {
+            McpProviderSession.clearMcpProviderSession(threadId);
+          }
+        }
+        NodeAssert.deepEqual(runtimeMock.state.mcpAddCalls, [
+          {
+            baseUrl: "http://127.0.0.1:4301",
+            input: {
+              name: "t3-code",
+              config: {
+                type: "remote",
+                url: "http://127.0.0.1:13774/mcp/opencode",
+                headers: { Authorization: "Bearer fake-private-session" },
+                oauth: false,
+              },
+            },
+          },
+        ]);
+      }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

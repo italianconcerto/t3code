@@ -16,6 +16,9 @@ it.layer(layer)("ManagedGoalRepository", (it) => {
       const threadId = ThreadId.make("managed-goal-persistence");
       const goal: ManagedGoals.ManagedGoal = {
         threadId,
+        goalId: "persistence-goal",
+        turnNumber: 1,
+        lastBlockedTurn: -1,
         objective: "Ship the migration",
         status: "active",
         tokenBudget: 5000,

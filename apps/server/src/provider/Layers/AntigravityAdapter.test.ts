@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import {
   AntigravitySettings,
   ApprovalRequestId,
+  EnvironmentId,
   ProviderInstanceId,
   ThreadId,
   type ProviderRuntimeEvent,
@@ -23,6 +24,7 @@ import * as AcpErrors from "effect-acp/errors";
 import type * as AcpSchema from "effect-acp/schema";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE } from "../antigravityAuthSupport.ts";
 import type { AcpSessionRuntimeEvent } from "../acp/AcpSessionRuntime.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
@@ -359,6 +361,15 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           ),
           Effect.forkScoped({ startImmediately: true }),
         );
+        const mcpSession = {
+          environmentId: EnvironmentId.make("antigravity-mcp-test"),
+          threadId,
+          providerSessionId: "antigravity-provider-session",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:13774/mcp/antigravity",
+          authorizationHeader: "Bearer fake-original",
+        };
+        McpProviderSession.setMcpProviderSession(mcpSession);
         const original = yield* adapter.startSession({
           threadId,
           cwd,
@@ -366,6 +377,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           modelSelection: { instanceId, model: nativeAlternative },
         });
         yield* adapter.stopSession(threadId);
+        McpProviderSession.setMcpProviderSession({
+          ...mcpSession,
+          authorizationHeader: "Bearer fake-refreshed",
+        });
         const resumed = yield* adapter.startSession({
           threadId,
           cwd,
@@ -396,10 +411,30 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         expect(requests.some((request) => request.method === "session/load")).toBe(false);
         expect(
           requests
+            .filter(
+              (request) => request.method === "session/new" || request.method === "session/resume",
+            )
+            .map((request) => request.params),
+        ).toMatchObject(
+          ["fake-original", "fake-refreshed"].map((token) => ({
+            mcpServers: [
+              {
+                type: "http",
+                name: "t3-code",
+                url: mcpSession.endpoint,
+                headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+              },
+            ],
+          })),
+        );
+        expect(
+          requests
             .filter((request) => request.method === "session/set_config_option")
             .map((request) => request.params),
         ).toContainEqual({ sessionId: "mock-session-1", configId: "mode", value: "auto_edit" });
-      }),
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+      ),
   );
 
   it.effect("reapplies the exact saved model and mode after a native resume", () =>

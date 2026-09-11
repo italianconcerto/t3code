@@ -29,6 +29,7 @@ import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
+import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -522,7 +523,27 @@ function WorkflowSection({
   );
 }
 
-export function AgentsPanel({
+export function AgentsPanel(props: {
+  model: AgentPanelModel;
+  environmentId?: EnvironmentId | null;
+  threadId?: ThreadId | null;
+}) {
+  const nativePanel = <NativeAgentsPanel {...props} />;
+  return props.environmentId && props.threadId ? (
+    <ManagedAgentsPanel
+      key={`${props.environmentId}:${props.threadId}`}
+      environmentId={props.environmentId}
+      threadId={props.threadId}
+      hasNativeAgents={props.model.hasAgents}
+    >
+      {nativePanel}
+    </ManagedAgentsPanel>
+  ) : (
+    nativePanel
+  );
+}
+
+function NativeAgentsPanel({
   model,
   environmentId = null,
   threadId = null,

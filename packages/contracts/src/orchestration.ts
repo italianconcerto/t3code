@@ -610,6 +610,7 @@ export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -692,6 +693,7 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -922,6 +924,7 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -1092,10 +1095,17 @@ const ThreadTurnStartBootstrap = Schema.Struct({
 
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
+const ManagedChildPrecondition = Schema.Struct({
+  parentThreadId: ThreadId,
+  parentCreatedAt: IsoDateTime,
+  childCreatedAt: IsoDateTime,
+});
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
+  managedChild: Schema.optional(ManagedChildPrecondition),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -1117,6 +1127,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
+  managedChild: Schema.optional(ManagedChildPrecondition),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -1136,6 +1147,7 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
   threadId: ThreadId,
+  managedChild: Schema.optional(ManagedChildPrecondition),
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
@@ -1448,6 +1460,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),

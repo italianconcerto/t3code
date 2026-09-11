@@ -141,7 +141,7 @@ function buildManagedGoalInput(goal: ManagedGoals.ManagedGoal, currentInput: str
     goal.tokenBudget !== null
       ? `\nThe total goal budget is ${goal.tokenBudget} tokens. T3 enforces it when this provider reports token usage.`
       : "";
-  return `T3 Code is managing this persistent goal. Keep working autonomously until it is genuinely achieved or blocked.${budget}\n\nUse the T3 Code MCP tool t3_get_goal to inspect state. Before your final response, you MUST call the T3 Code MCP tool t3_update_goal with status complete if the objective is achieved and verified. A normal answer and the provider's native goal tools do not complete this T3-managed goal. Use t3_update_goal with status blocked only when the same blocker prevents progress; T3 requires three consecutive reports. Do not stop merely because this turn is ending: omit t3_update_goal and T3 will start another turn automatically.\n\n<goal>\n${goal.objective}\n</goal>\n\n<current_request>\n${currentInput}\n</current_request>`;
+  return `T3 Code is managing this persistent goal. Keep working autonomously until it is genuinely achieved or blocked.${budget}\n\nUse the T3 Code MCP tool t3_get_goal to inspect state. For t3_update_goal, use goalId=${goal.goalId} and turnNumber=${goal.turnNumber} from these instructions; do not substitute an identity from another turn. Before your final response, you MUST call the T3 Code MCP tool t3_update_goal with status complete if the objective is achieved and verified. A normal answer and the provider's native goal tools do not complete this T3-managed goal. Use t3_update_goal with status blocked only when the same blocker prevents progress; T3 requires three consecutive distinct turns, not repeated calls. Do not stop merely because this turn is ending: omit t3_update_goal and T3 will start another turn automatically.\n\n<goal>\n${goal.objective}\n</goal>\n\n<current_request>\n${currentInput}\n</current_request>`;
 }
 
 function formatProviderHandoffMessage(message: OrchestrationMessage): string | undefined {
@@ -1390,46 +1390,55 @@ const make = Effect.gen(function* () {
       return;
     }
     if (existing.expectedTurnId === null) {
-      if (existing.status === "active" && existing.awaitingTurn) {
-        recordEarlyGoalTerminal(event);
-      }
+      recordEarlyGoalTerminal(event);
       return;
     }
     if (event.turnId !== existing.expectedTurnId) return;
     takeEarlyGoalTerminal(event.threadId, event.providerInstanceId, event.turnId);
     const now = DateTime.toEpochMillis(yield* DateTime.now);
-    const tokensUsed = existing.tokensUsed + goalTokenCount(event);
     const errorMessage = event.type === "turn.completed" ? event.payload.errorMessage : undefined;
     const failed = event.type === "turn.completed" && event.payload.state === "failed";
     const usageLimited =
       failed &&
       /(?:usage|rate|weekly|monthly).*limit|limit.*(?:usage|rate)/iu.test(errorMessage ?? "");
-    const nextStatus =
-      existing.status !== "active"
-        ? existing.status
-        : event.type === "turn.aborted"
-          ? "paused"
-          : usageLimited
-            ? "usageLimited"
-            : failed
-              ? "blocked"
-              : existing.tokenBudget !== null && tokensUsed >= existing.tokenBudget
-                ? "budgetLimited"
-                : "active";
-    const next: ManagedGoals.ManagedGoal = {
-      ...existing,
-      status: nextStatus,
-      tokensUsed,
-      awaitingTurn: false,
-      expectedTurnId: null,
-      updatedAtMs: now,
-      ...(failed && errorMessage ? { blockedReason: errorMessage } : {}),
-    };
-    yield* managedGoalRepository.upsert(next);
-    if (nextStatus !== "active" && nextStatus !== "paused") {
+    let applied = false;
+    const result = yield* managedGoalRepository.modify(event.threadId, (current) => {
+      if (
+        current.goalId !== existing.goalId ||
+        current.expectedTurnId !== event.turnId ||
+        current.expectedProviderInstanceId !== event.providerInstanceId
+      )
+        return current;
+      applied = true;
+      const tokensUsed = current.tokensUsed + goalTokenCount(event);
+      const status =
+        current.status !== "active"
+          ? current.status
+          : event.type === "turn.aborted"
+            ? "paused"
+            : usageLimited
+              ? "usageLimited"
+              : failed
+                ? "blocked"
+                : current.tokenBudget !== null && tokensUsed >= current.tokenBudget
+                  ? "budgetLimited"
+                  : "active";
+      return {
+        ...current,
+        status,
+        tokensUsed,
+        awaitingTurn: false,
+        expectedTurnId: null,
+        updatedAtMs: now,
+        ...(failed && errorMessage ? { blockedReason: errorMessage } : {}),
+      };
+    });
+    if (!applied || Option.isNone(result)) return;
+    const next = result.value;
+    if (next.status !== "active" && next.status !== "paused") {
       yield* appendAutomationResult(
         event.threadId,
-        `Goal ${nextStatus}: ${next.objective} • ${tokensUsed}${next.tokenBudget !== null ? ` / ${next.tokenBudget}` : ""} tokens`,
+        `Goal ${next.status}: ${next.objective} • ${next.tokensUsed}${next.tokenBudget !== null ? ` / ${next.tokenBudget}` : ""} tokens`,
       );
     }
   });
@@ -1440,12 +1449,16 @@ const make = Effect.gen(function* () {
       if (goal.awaitingTurn) continue;
       const thread = yield* resolveThreadShell(goal.threadId);
       if (!thread || thread.archivedAt !== null || thread.settledOverride === "settled") {
-        yield* managedGoalRepository.upsert({
-          ...goal,
-          status: "paused",
-          awaitingTurn: false,
-          updatedAtMs: now,
-        });
+        yield* managedGoalRepository.modify(goal.threadId, (current) =>
+          current.goalId !== goal.goalId || current.status !== "active"
+            ? current
+            : {
+                ...current,
+                status: "paused",
+                awaitingTurn: false,
+                updatedAtMs: now,
+              },
+        );
         continue;
       }
       const busy =
@@ -1458,13 +1471,25 @@ const make = Effect.gen(function* () {
         stoppingThreadIds.has(goal.threadId);
       if (busy) continue;
 
-      yield* managedGoalRepository.upsert({
-        ...goal,
-        awaitingTurn: true,
-        expectedProviderInstanceId: thread.modelSelection.instanceId,
-        expectedTurnId: null,
-        updatedAtMs: now,
+      let claimed = false;
+      yield* managedGoalRepository.modify(goal.threadId, (current) => {
+        if (
+          current.goalId !== goal.goalId ||
+          current.turnNumber !== goal.turnNumber ||
+          current.status !== "active" ||
+          current.awaitingTurn
+        )
+          return current;
+        claimed = true;
+        return {
+          ...current,
+          awaitingTurn: true,
+          expectedProviderInstanceId: thread.modelSelection.instanceId,
+          expectedTurnId: null,
+          updatedAtMs: now,
+        };
       });
+      if (!claimed) continue;
       const createdAt = DateTime.formatIso(DateTime.makeUnsafe(now));
       yield* orchestrationEngine
         .dispatch({
@@ -1484,26 +1509,34 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.catchCause((cause) =>
-            managedGoalRepository
-              .upsert({
-                ...goal,
-                status: "blocked",
-                awaitingTurn: false,
-                blockedReason: formatFailureDetail(cause),
-                updatedAtMs: now,
-              })
-              .pipe(
-                Effect.andThen(
-                  appendProviderFailureActivity({
-                    threadId: goal.threadId,
-                    kind: "provider.turn.start.failed",
-                    summary: "Goal blocked after continuation dispatch failed",
-                    detail: formatFailureDetail(cause),
-                    turnId: null,
-                    createdAt,
-                  }),
-                ),
-              ),
+            Effect.gen(function* () {
+              let applied = false;
+              yield* managedGoalRepository.modify(goal.threadId, (current) => {
+                if (
+                  current.goalId !== goal.goalId ||
+                  current.turnNumber !== goal.turnNumber ||
+                  current.status !== "active"
+                )
+                  return current;
+                applied = true;
+                return {
+                  ...current,
+                  status: "blocked",
+                  awaitingTurn: false,
+                  blockedReason: formatFailureDetail(cause),
+                  updatedAtMs: now,
+                };
+              });
+              if (applied)
+                yield* appendProviderFailureActivity({
+                  threadId: goal.threadId,
+                  kind: "provider.turn.start.failed",
+                  summary: "Goal blocked after continuation dispatch failed",
+                  detail: formatFailureDetail(cause),
+                  turnId: null,
+                  createdAt,
+                });
+            }),
           ),
         );
     }
@@ -1652,33 +1685,37 @@ const make = Effect.gen(function* () {
         requestId: event.payload.messageId,
       });
 
+    let managedGoalForTurn: ManagedGoals.ManagedGoal | undefined;
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
-      return managedGoalRepository.get(thread.id).pipe(
-        Effect.flatMap((goal) =>
-          Option.isSome(goal) && goal.value.status === "active"
-            ? managedGoalRepository.upsert({
-                ...goal.value,
+      return managedGoalRepository
+        .modify(thread.id, (goal) =>
+          goal.status === "active" &&
+          goal.goalId === managedGoalForTurn?.goalId &&
+          goal.turnNumber === managedGoalForTurn.turnNumber
+            ? {
+                ...goal,
                 status: "blocked",
                 awaitingTurn: false,
                 blockedReason: detail,
                 updatedAtMs: DateTime.toEpochMillis(DateTime.makeUnsafe(event.payload.createdAt)),
-              })
-            : Effect.void,
-        ),
-        Effect.andThen(
-          setThreadSessionErrorOnTurnStartFailure({
-            threadId: event.payload.threadId,
-            detail,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.flatMap(() => appendTurnStartFailure("Provider turn start failed", detail)),
-        Effect.asVoid,
-      );
+              }
+            : goal,
+        )
+        .pipe(
+          Effect.andThen(
+            setThreadSessionErrorOnTurnStartFailure({
+              threadId: event.payload.threadId,
+              detail,
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+          Effect.flatMap(() => appendTurnStartFailure("Provider turn start failed", detail)),
+          Effect.asVoid,
+        );
     };
 
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
@@ -1817,6 +1854,9 @@ const make = Effect.gen(function* () {
           earlyGoalTerminalEvents.delete(thread.id);
           const goal: ManagedGoals.ManagedGoal = {
             threadId: thread.id,
+            goalId: yield* crypto.randomUUIDv4,
+            turnNumber: 0,
+            lastBlockedTurn: -1,
             objective: command.objective,
             status: "active",
             tokenBudget: command.tokenBudget ?? null,
@@ -1853,13 +1893,26 @@ const make = Effect.gen(function* () {
         }
         if (command.action === "pause" || command.action === "resume") {
           if (goal) {
-            yield* managedGoalRepository.upsert({
-              ...goal,
-              status: command.action === "pause" ? "paused" : "active",
-              awaitingTurn: command.action === "pause" ? goal.awaitingTurn : false,
-              ...(command.action === "resume" ? { expectedTurnId: null } : {}),
-              updatedAtMs: now,
-            });
+            yield* managedGoalRepository.modify(thread.id, (current) =>
+              current.goalId !== goal.goalId
+                ? current
+                : {
+                    ...current,
+                    status: command.action === "pause" ? "paused" : "active",
+                    awaitingTurn:
+                      current.awaitingTurn ||
+                      (command.action === "resume" && current.expectedTurnId !== null),
+                    ...(command.action === "resume"
+                      ? {
+                          turnNumber: current.turnNumber + 1,
+                          blockedAttempts: 0,
+                          blockedReason: null,
+                          lastBlockedTurn: -1,
+                        }
+                      : {}),
+                    updatedAtMs: now,
+                  },
+            );
           }
           yield* appendAutomationResult(
             thread.id,
@@ -1885,23 +1938,26 @@ const make = Effect.gen(function* () {
       if (!continueWithManagedGoal) return;
     }
 
-    const managedGoal = Option.getOrUndefined(yield* managedGoalRepository.get(thread.id));
-    if (managedGoal?.status === "active") {
-      providerMessageText = buildManagedGoalInput(managedGoal, providerMessageText);
-      const expectedProviderInstanceId =
-        event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
-      if (
-        !managedGoal.awaitingTurn ||
-        managedGoal.expectedProviderInstanceId !== expectedProviderInstanceId
-      ) {
-        yield* managedGoalRepository.upsert({
-          ...managedGoal,
-          awaitingTurn: true,
-          expectedProviderInstanceId,
-          expectedTurnId: null,
-          updatedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
-        });
-      }
+    const goalTurnStartedAt = DateTime.toEpochMillis(yield* DateTime.now);
+    managedGoalForTurn = Option.getOrUndefined(
+      yield* managedGoalRepository.modify(thread.id, (current) =>
+        current.status !== "active"
+          ? current
+          : {
+              ...current,
+              turnNumber: current.turnNumber + 1,
+              awaitingTurn: true,
+              expectedProviderInstanceId:
+                event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
+              expectedTurnId: null,
+              updatedAtMs: goalTurnStartedAt,
+            },
+      ),
+    );
+    if (managedGoalForTurn?.status === "active") {
+      providerMessageText = buildManagedGoalInput(managedGoalForTurn, providerMessageText);
+    } else {
+      managedGoalForTurn = undefined;
     }
 
     yield* ensureThreadWorktree(thread);
@@ -2101,21 +2157,29 @@ const make = Effect.gen(function* () {
               }
             }
           }
-          const goal = yield* managedGoalRepository.get(event.payload.threadId);
-          if (!Option.isSome(goal) || goal.value.status !== "active" || !goal.value.awaitingTurn) {
-            return;
-          }
+          if (!managedGoalForTurn) return;
           const now = DateTime.toEpochMillis(yield* DateTime.now);
-          const correlated = {
-            ...goal.value,
-            expectedProviderInstanceId:
-              sendTurnRequest.value.modelSelection?.instanceId ??
-              event.payload.modelSelection?.instanceId ??
-              goal.value.expectedProviderInstanceId,
-            expectedTurnId: turnId,
-            updatedAtMs: now,
-          };
-          yield* managedGoalRepository.upsert(correlated);
+          const result = yield* managedGoalRepository.modify(event.payload.threadId, (current) =>
+            current.goalId !== managedGoalForTurn?.goalId ||
+            current.turnNumber !== managedGoalForTurn.turnNumber
+              ? current
+              : {
+                  ...current,
+                  expectedProviderInstanceId:
+                    sendTurnRequest.value.modelSelection?.instanceId ??
+                    event.payload.modelSelection?.instanceId ??
+                    current.expectedProviderInstanceId,
+                  expectedTurnId: turnId,
+                  updatedAtMs: now,
+                },
+          );
+          if (
+            Option.isNone(result) ||
+            result.value.goalId !== managedGoalForTurn.goalId ||
+            result.value.turnNumber !== managedGoalForTurn.turnNumber
+          )
+            return;
+          const correlated = result.value;
           const earlyTerminal =
             correlated.expectedProviderInstanceId === null
               ? undefined
@@ -2445,17 +2509,15 @@ const make = Effect.gen(function* () {
         yield* processUserInputResponseRequested(event);
         return;
       case "thread.session-stop-requested":
-        yield* managedGoalRepository.get(event.payload.threadId).pipe(
-          Effect.flatMap((goal) =>
-            Option.isSome(goal) && goal.value.status === "active"
-              ? managedGoalRepository.upsert({
-                  ...goal.value,
-                  status: "paused",
-                  awaitingTurn: false,
-                  updatedAtMs: DateTime.toEpochMillis(DateTime.makeUnsafe(event.payload.createdAt)),
-                })
-              : Effect.void,
-          ),
+        yield* managedGoalRepository.modify(event.payload.threadId, (goal) =>
+          goal.status === "active"
+            ? {
+                ...goal,
+                status: "paused",
+                awaitingTurn: false,
+                updatedAtMs: DateTime.toEpochMillis(DateTime.makeUnsafe(event.payload.createdAt)),
+              }
+            : goal,
         );
         yield* processSessionStopRequested(event);
         return;
@@ -2560,12 +2622,17 @@ const make = Effect.gen(function* () {
         Effect.forEach(
           goals,
           (goal) =>
-            managedGoalRepository.upsert({
-              ...goal,
-              awaitingTurn: false,
-              expectedTurnId: null,
-              updatedAtMs: recoveryNow,
-            }),
+            managedGoalRepository.modify(goal.threadId, (current) =>
+              current.goalId !== goal.goalId || current.status !== "active"
+                ? current
+                : {
+                    ...current,
+                    awaitingTurn: false,
+                    expectedTurnId: null,
+                    turnNumber: current.turnNumber + 1,
+                    updatedAtMs: recoveryNow,
+                  },
+            ),
           { discard: true },
         ),
       ),
