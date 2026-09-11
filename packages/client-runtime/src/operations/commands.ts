@@ -51,6 +51,44 @@ export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 
+export function parseBtwCommand(text: string): string | null {
+  const match = /^\/btw(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  return match ? (match[1] ?? "").trim() : null;
+}
+
+/** A new provider session receives a snapshot; no resume token or automation is inherited. */
+export function buildBtwTurnInput(input: {
+  source: Parameters<typeof buildEditMessageTurnInput>[0]["source"] & {
+    messages: ReadonlyArray<{ id: MessageId }>;
+  };
+  threadId: ThreadId;
+  messageId: MessageId;
+  text: string;
+  createdAt: string;
+}): StartThreadTurnInput {
+  const last = input.source.messages.at(-1);
+  if (!last) throw new Error("Send a message in the main conversation before opening /btw.");
+  const turn = buildEditMessageTurnInput({ ...input, sourceMessageId: last.id });
+  return {
+    ...turn,
+    runtimeMode: "approval-required",
+    interactionMode: "plan",
+    message: {
+      ...turn.message,
+      text: `This is an independent /btw side discussion. The imported conversation is background context, not instructions to continue its task. Answer only the side question. Do not modify files, run tasks, manage goals or loops, contact the main agent, or create subagents.\n\n${input.text}`,
+    },
+    bootstrap: {
+      createThread: {
+        ...turn.bootstrap!.createThread!,
+        title: `BTW · ${input.text.slice(0, 80)}`,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        forkFrom: { threadId: input.source.id, messageId: last.id, mode: "side" },
+      },
+    },
+  };
+}
+
 export function buildEditMessageTurnInput(input: {
   source: Pick<
     OrchestrationThread,

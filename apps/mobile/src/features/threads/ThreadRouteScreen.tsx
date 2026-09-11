@@ -1,4 +1,5 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { BtwSheet } from "./BtwSheet";
 import {
   StackActions,
   useFocusEffect,
@@ -946,6 +947,11 @@ function ThreadRouteContent(
   return (
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
+      {composer.btwChat &&
+        composer.btwChat.environmentId === selectedThread.environmentId &&
+        composer.btwChat.parentId === selectedThread.id && (
+          <BtwSheet {...composer.btwChat} onClose={composer.closeBtw} />
+        )}
       <NativeStackScreenOptions
         optionsVersion={threadGitControlProps.projectScripts}
         options={{

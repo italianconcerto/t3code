@@ -51,10 +51,12 @@ export function ManagedAgentChat({
   parent,
   child,
   onBack,
+  sideDiscussion = false,
 }: {
   parent: EnvironmentThreadShell;
   child: EnvironmentThreadShell;
   onBack: () => void;
+  sideDiscussion?: boolean;
 }) {
   const detail = useThread({ environmentId: child.environmentId, threadId: child.id });
   const send = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -118,9 +120,17 @@ export function ManagedAgentChat({
     } else setFeedback("Stop requested. Watch the agent status for confirmation.");
   };
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label="Subagent side chat">
+    <section
+      className="flex h-full min-h-0 flex-col"
+      aria-label={sideDiscussion ? "BTW side chat" : "Subagent side chat"}
+    >
       <header className="flex items-center gap-2 border-b p-2">
-        <Button variant="ghost" size="icon" aria-label="Back to agents" onClick={onBack}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={sideDiscussion ? "Close and discard BTW" : "Back to agents"}
+          onClick={onBack}
+        >
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0 flex-1">
@@ -150,7 +160,7 @@ export function ManagedAgentChat({
         </Button>
         <Button variant="outline" size="sm" disabled={stopping} onClick={() => void stop()}>
           <Square className="size-3" />
-          {stopping ? "Stopping…" : "Stop agent"}
+          {stopping ? "Stopping…" : sideDiscussion ? "Stop BTW" : "Stop agent"}
         </Button>
       </header>
       <div
@@ -167,10 +177,15 @@ export function ManagedAgentChat({
         ) : (
           <>
             <p className="mb-3 text-xs text-muted-foreground">
-              Recent messages. Open the full chat for earlier history, approvals, questions and file
-              changes.
+              {sideDiscussion
+                ? "Independent discussion. Nothing here is sent to the main agent. Close discards it; /btw reopens it after navigation. Open full chat for approvals or questions."
+                : "Recent messages. Open the full chat for earlier history, approvals, questions and file changes."}
             </p>
-            {managedMessageExcerpt(detail.messages).map((message) => (
+            {managedMessageExcerpt(
+              sideDiscussion
+                ? detail.messages.filter((message) => !message.id.startsWith(`${child.id}:fork:`))
+                : detail.messages,
+            ).map((message) => (
               <article key={message.id} className="mb-4">
                 <p className="mb-1 text-xs font-medium text-muted-foreground">
                   {message.role === "user" ? "Instructions" : "Agent"}
@@ -218,11 +233,13 @@ export function ManagedAgentChat({
           </p>
         )}
         <textarea
-          aria-label="Instructions for subagent"
+          aria-label={sideDiscussion ? "BTW follow-up" : "Instructions for subagent"}
           className="min-h-20 w-full resize-y rounded-md border bg-background p-2 text-sm"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Change direction, add context, or resume work…"
+          placeholder={
+            sideDiscussion ? "Ask a follow-up…" : "Change direction, add context, or resume work…"
+          }
         />
         <Button type="submit" size="sm" disabled={sending || !draft.trim()}>
           {sending ? "Sending…" : "Send instructions"}

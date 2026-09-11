@@ -126,7 +126,7 @@ export function resolveProviderSlashCommandsForCwd(
     resolveProviderWorkspaceSnapshot(provider, cwd)?.slashCommands ?? provider.slashCommands;
   const missingServerCommands = provider.slashCommands.filter(
     (command) =>
-      (command.name === "goal" || command.name === "loop") &&
+      (command.name === "goal" || command.name === "loop" || command.name === "btw") &&
       !commands.some((workspaceCommand) => workspaceCommand.name === command.name),
   );
   return missingServerCommands.length > 0 ? [...commands, ...missingServerCommands] : commands;

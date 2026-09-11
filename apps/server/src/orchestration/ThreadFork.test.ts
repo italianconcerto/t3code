@@ -65,6 +65,32 @@ const bootstrap: ThreadTurnStartBootstrap = {
 };
 
 describe("selectThreadFork", () => {
+  it("snapshots a side discussion through the last assistant message without changing the source", () => {
+    const before = structuredClone(source);
+    const fork = selectThreadFork(source, {
+      createThread: {
+        ...bootstrap.createThread!,
+        forkFrom: { threadId: source.id, messageId: MessageId.make("message-3"), mode: "side" },
+      },
+    });
+    expect(fork.side).toBe(true);
+    expect(fork.history.map((message) => message.text)).toEqual([
+      "text-0",
+      "text-1",
+      "text-2",
+      "text-3",
+    ]);
+    expect(source).toEqual(before);
+  });
+  it("freezes side context at the requested cutoff even while the main conversation advances", () => {
+    const fork = selectThreadFork(source, {
+      createThread: {
+        ...bootstrap.createThread!,
+        forkFrom: { threadId: source.id, messageId: MessageId.make("message-1"), mode: "side" },
+      },
+    });
+    expect(fork.history.map((message) => message.id)).toEqual(["message-0", "message-1"]);
+  });
   it("cuts immediately before the selected user message, even with identical timestamps", () => {
     const before = structuredClone(source);
     const fork = selectThreadFork(source, bootstrap);
@@ -127,6 +153,7 @@ it.layer(testLayer)("copyThreadFork", (it) => {
         const fork = selectThreadFork(source, bootstrap);
         const copied = yield* copyThreadFork(
           {
+            ...fork,
             history: [{ ...fork.history[0]!, attachments: [attachment] }, fork.history[1]!],
             target: { ...fork.target, attachments: [attachment] },
           },
@@ -167,6 +194,7 @@ it.layer(testLayer)("copyThreadFork", (it) => {
       const fork = selectThreadFork(source, bootstrap);
       const exit = yield* copyThreadFork(
         {
+          ...fork,
           history: [{ ...fork.history[0]!, attachments: [attachment] }],
           target: {
             ...fork.target,

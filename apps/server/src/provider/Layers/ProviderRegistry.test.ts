@@ -1,5 +1,5 @@
 import { LOOP_SLASH_COMMAND } from "../providerSnapshot.ts";
-import { GOAL_SLASH_COMMAND } from "../goal.ts";
+import { GOAL_SLASH_COMMAND, BTW_SLASH_COMMAND } from "../goal.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -416,6 +416,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
             GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
+            BTW_SLASH_COMMAND,
           ]);
         }),
       );
@@ -2852,6 +2853,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
             GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
+            BTW_SLASH_COMMAND,
           ]);
         }).pipe(
           Effect.provide(
@@ -2898,6 +2900,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
             GOAL_SLASH_COMMAND,
             LOOP_SLASH_COMMAND,
+            BTW_SLASH_COMMAND,
           ]);
         }).pipe(
           Effect.provide(

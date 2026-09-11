@@ -10,7 +10,7 @@ import type {
   ServerProviderState,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { GOAL_SLASH_COMMAND } from "./goal.ts";
+import { GOAL_SLASH_COMMAND, BTW_SLASH_COMMAND } from "./goal.ts";
 import * as Effect from "effect/Effect";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
@@ -232,10 +232,11 @@ export function buildServerProvider(input: {
     models: input.models,
     slashCommands: [
       ...(input.slashCommands ?? []).filter(
-        (command) => command.name !== "goal" && command.name !== "loop",
+        (command) => command.name !== "goal" && command.name !== "loop" && command.name !== "btw",
       ),
       GOAL_SLASH_COMMAND,
       LOOP_SLASH_COMMAND,
+      BTW_SLASH_COMMAND,
     ],
     skills: [...(input.skills ?? [])],
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),

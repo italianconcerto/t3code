@@ -1070,7 +1070,13 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
-  forkFrom: Schema.optional(Schema.Struct({ threadId: ThreadId, messageId: MessageId })),
+  forkFrom: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      messageId: MessageId,
+      mode: Schema.optional(Schema.Literal("side")),
+    }),
+  ),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,

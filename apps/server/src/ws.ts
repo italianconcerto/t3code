@@ -1131,6 +1131,7 @@ const makeWsRpcLayer = (
                 worktreePath: bootstrap.createThread.worktreePath,
                 createdAt: bootstrap.createThread.createdAt,
                 ...(fork ? { historyImport: true as const } : {}),
+                ...(fork?.side && forkFrom ? { parentThreadId: forkFrom.threadId } : {}),
               });
               // The successful create is a fence in the engine command queue:
               // every delete for the prior incarnation committed before it.
@@ -1245,6 +1246,18 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        // Old clients must not accidentally steer the main session with a UI-only command.
+        if (
+          normalizedCommand.type === "thread.turn.start" &&
+          /^\/btw(?:\s|$)/i.test(normalizedCommand.message.text.trim())
+        ) {
+          return Effect.fail(
+            new OrchestrationDispatchCommandError({
+              message:
+                "Use an updated T3 client to open a /btw side discussion. The main agent was not changed.",
+            }),
+          );
+        }
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)

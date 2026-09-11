@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { buildBtwTurnInput, parseBtwCommand } from "@t3tools/client-runtime/operations";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { Alert } from "react-native";
 
 import {
@@ -11,7 +13,7 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
@@ -21,7 +23,7 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
-import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { makeQueuedMessageMetadata, makeTurnCommandMetadata } from "../lib/commandMetadata";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
 import { resolveProviderInteractionMode } from "../features/threads/legacy-plan-mode";
 import {
@@ -57,6 +59,7 @@ import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
+import { useThreadShells } from "./entities";
 import { useAtomCommand } from "./use-atom-command";
 import {
   composerAttachmentUploadBlockReason,
@@ -102,6 +105,27 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
+  const [btwChat, setBtwChat] = useState<{
+    environmentId: EnvironmentId;
+    parentId: ThreadId;
+    threadId: ThreadId;
+  } | null>(null);
+  const btwCreating = useRef(false);
+  const btwThreadShells = useThreadShells();
+  const observedBtw = useRef(new Set<ThreadId>());
+  const discardedBtw = useRef(new Set<ThreadId>());
+  useEffect(() => {
+    if (!btwChat) return;
+    if (
+      btwThreadShells.some(
+        (thread) =>
+          thread.environmentId === btwChat.environmentId && thread.id === btwChat.threadId,
+      )
+    )
+      observedBtw.current.add(btwChat.threadId);
+    else if (observedBtw.current.has(btwChat.threadId)) setBtwChat(null);
+  }, [btwChat, btwThreadShells]);
+  const startBtw = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const {
     selectedThread: selectedThreadShell,
     selectedThreadCreation,
@@ -341,6 +365,73 @@ export function useThreadComposerState() {
     const provider = serverConfig?.providers.find(
       (entry) => entry.instanceId === modelSelection.instanceId,
     );
+    const btwQuestion = parseBtwCommand(text);
+    if (btwQuestion !== null) {
+      if (btwCreating.current) return null;
+      if (!selectedThreadDetail || serverConfig?.environment.capabilities.threadSideChat !== true) {
+        Alert.alert(
+          "BTW unavailable",
+          "Update this environment's server and load the conversation first.",
+        );
+        return null;
+      }
+      if (
+        btwChat?.environmentId === selectedThreadShell.environmentId &&
+        btwChat.parentId === selectedThreadShell.id
+      )
+        return null;
+      const existingBtw = btwThreadShells.find(
+        (thread) =>
+          thread.environmentId === selectedThreadShell.environmentId &&
+          thread.parentThreadId === selectedThreadShell.id &&
+          thread.id.startsWith("btw:") &&
+          !discardedBtw.current.has(thread.id) &&
+          thread.archivedAt === null,
+      );
+      if (existingBtw) {
+        setBtwChat({
+          environmentId: existingBtw.environmentId,
+          parentId: selectedThreadShell.id,
+          threadId: existingBtw.id,
+        });
+        return null;
+      }
+      if (!btwQuestion || attachments.length) {
+        Alert.alert(
+          "Use /btw followed by a question",
+          "Text only; context is copied automatically.",
+        );
+        return null;
+      }
+      btwCreating.current = true;
+      try {
+        const metadata = makeTurnCommandMetadata();
+        const threadId = ThreadId.make(`btw:${metadata.threadId}`);
+        const result = await startBtw({
+          environmentId: selectedThreadShell.environmentId,
+          input: buildBtwTurnInput({
+            source: { ...selectedThreadDetail, modelSelection },
+            threadId,
+            messageId: MessageId.make(metadata.messageId),
+            text: btwQuestion,
+            createdAt: metadata.createdAt,
+          }),
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        setBtwChat({
+          environmentId: selectedThreadShell.environmentId,
+          parentId: selectedThreadShell.id,
+          threadId,
+        });
+        if (getComposerDraftSnapshot(threadKey).text.trim() === text)
+          clearComposerDraftContent(threadKey);
+      } catch (error) {
+        Alert.alert("Could not open BTW", error instanceof Error ? error.message : "Try again.");
+      } finally {
+        btwCreating.current = false;
+      }
+      return null;
+    }
     const feedbackCommand =
       attachments.length === 0 &&
       (provider?.driver === "codex" || thread.session?.providerName === "codex")
@@ -428,6 +519,9 @@ export function useThreadComposerState() {
     return messageId;
   }, [
     selectedEnvironmentRuntime?.connectionState,
+    btwChat,
+    btwThreadShells,
+    startBtw,
     selectedEnvironmentRuntime?.serverConfig,
     selectedThreadCreation,
     selectedThreadDetail,
@@ -613,6 +707,11 @@ export function useThreadComposerState() {
   );
 
   return {
+    btwChat,
+    closeBtw: (discarded = false) => {
+      if (discarded && btwChat) discardedBtw.current.add(btwChat.threadId);
+      setBtwChat(null);
+    },
     feedbackSubmissions,
     dismissFeedback,
     selectedThreadFeed,

@@ -15,3 +15,9 @@ export const GOAL_SLASH_COMMAND = {
   description: "Manage a persistent goal: objective, status, pause, resume, clear",
   input: { hint: "[--budget tokens] objective | status | pause | resume | clear" },
 };
+
+export const BTW_SLASH_COMMAND = {
+  name: "btw",
+  description: "Open an independent side discussion with this conversation's context",
+  input: { hint: "question" },
+};

@@ -19,13 +19,14 @@ export function selectThreadFork(source: OrchestrationThread, bootstrap: ThreadT
   const create = bootstrap.createThread;
   const index = source.messages.findIndex((message) => message.id === create?.forkFrom?.messageId);
   const target = source.messages[index];
+  const side = create?.forkFrom?.mode === "side";
   if (
     !create ||
     source.id !== create.forkFrom?.threadId ||
     source.deletedAt !== null ||
     source.projectId !== create.projectId ||
     !target ||
-    target.role !== "user" ||
+    (!side && target.role !== "user") ||
     bootstrap.prepareWorktree ||
     bootstrap.runSetupScript ||
     create.branch !== source.branch ||
@@ -33,7 +34,7 @@ export function selectThreadFork(source: OrchestrationThread, bootstrap: ThreadT
   ) {
     throw new Error("Cannot branch from this message. Reload the conversation and try again.");
   }
-  return { history: source.messages.slice(0, index), target };
+  return { history: source.messages.slice(0, index + (side ? 1 : 0)), target, side };
 }
 
 export const copyThreadFork = Effect.fn("copyThreadFork")(function* (
@@ -77,6 +78,7 @@ export const copyThreadFork = Effect.fn("copyThreadFork")(function* (
   });
   return yield* Effect.gen(function* () {
     const history = yield* Effect.forEach(fork.history, copyMessage);
+    if (fork.side) return { history, attachments: [] };
     const target = yield* copyMessage(fork.target, fork.history.length);
     return { history, attachments: target.attachments };
   }).pipe(

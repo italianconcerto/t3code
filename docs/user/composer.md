@@ -6,6 +6,20 @@ include a skill when the task needs more context.
 Messages can contain up to 120,000 characters. Longer drafts stay in the composer
 so you can shorten them or split them into several messages.
 
+## Ask a side question with /btw
+
+Send `/btw your question` to open an independent side discussion using a snapshot
+of the current conversation and its selected model and subscription. The main
+agent keeps working; side messages are not sent back to it. Goal and loop state
+are not inherited. The side discussion requests plan mode and approval-required
+permissions; these are provider controls, not a separate filesystem sandbox.
+
+Use the side composer for follow-up questions. Stop affects only that side chat.
+Close and discard deletes the side conversation, without restoring files. If you
+navigate away or reload, `/btw` reopens the existing discussion. Open its full chat
+if the provider requests an approval or clarification. Both client and server must
+support side discussions. On phones, the side discussion opens as a sheet.
+
 ## Attach files
 
 Attach up to eight files per message. Images can be up to 10 MB; other files can

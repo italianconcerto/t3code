@@ -31,7 +31,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
-  type ThreadId,
+  ThreadId,
   type ThreadLinkedPullRequest,
   type TurnId,
   type KeybindingCommand,
@@ -230,7 +230,12 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { buildEditMessageTurnInput } from "@t3tools/client-runtime/operations";
+import {
+  buildEditMessageTurnInput,
+  buildBtwTurnInput,
+  parseBtwCommand,
+} from "@t3tools/client-runtime/operations";
+import { BtwPanel } from "./BtwPanel";
 import { waitForThreadShell } from "@t3tools/client-runtime/state/threads";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
@@ -318,6 +323,7 @@ import {
   useThread,
   useThreadRefs,
   useThreadShell,
+  useThreadShells,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -1617,6 +1623,26 @@ export default function ChatView(props: ChatViewProps) {
     Record<string, LocalThreadErrorEntry>
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
+  const [btwChat, setBtwChat] = useState<{
+    environmentId: EnvironmentId;
+    parentId: ThreadId;
+    threadId: ThreadId;
+  } | null>(null);
+  const btwThreadShells = useThreadShells();
+  const observedBtw = useRef(new Set<ThreadId>());
+  const discardedBtw = useRef(new Set<ThreadId>());
+  useEffect(() => {
+    if (!btwChat) return;
+    if (
+      btwThreadShells.some(
+        (thread) =>
+          thread.environmentId === btwChat.environmentId && thread.id === btwChat.threadId,
+      )
+    )
+      observedBtw.current.add(btwChat.threadId);
+    else if (observedBtw.current.has(btwChat.threadId)) setBtwChat(null);
+  }, [btwChat, btwThreadShells]);
+  const btwCreating = useRef(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
@@ -6578,6 +6604,81 @@ export default function ChatView(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
+    const btwQuestion = parseBtwCommand(trimmed);
+    if (btwQuestion !== null) {
+      if (btwCreating.current) return;
+      if (!isServerThread || serverConfig?.environment.capabilities.threadSideChat !== true) {
+        toastManager.add({
+          type: "warning",
+          title: "BTW unavailable",
+          description: "Update this environment's server and start a conversation first.",
+        });
+        return;
+      }
+      const pendingBtw =
+        btwChat?.environmentId === environmentId && btwChat.parentId === activeThread.id
+          ? btwChat
+          : null;
+      if (pendingBtw) {
+        setBtwChat(pendingBtw);
+        return;
+      }
+      const existingBtw = btwThreadShells.find(
+        (thread) =>
+          thread.environmentId === environmentId &&
+          thread.parentThreadId === activeThread.id &&
+          thread.id.startsWith("btw:") &&
+          !discardedBtw.current.has(thread.id) &&
+          thread.archivedAt === null,
+      );
+      if (existingBtw) {
+        setBtwChat({ environmentId, parentId: activeThread.id, threadId: existingBtw.id });
+        toastManager.add({
+          type: "info",
+          title: "BTW reopened",
+          description: "Use its composer for follow-ups. Your main draft was preserved.",
+        });
+        return;
+      }
+      if (!btwQuestion || composerHasNonPromptContent) {
+        toastManager.add({
+          type: "info",
+          title: "Use /btw followed by a question",
+          description: "Send text only; the conversation context is copied automatically.",
+        });
+        return;
+      }
+      btwCreating.current = true;
+      try {
+        const nextThreadId = ThreadId.make(`btw:${newThreadId()}`);
+        const result = await startThreadTurn({
+          environmentId,
+          input: buildBtwTurnInput({
+            source: { ...activeThread, modelSelection: ctxSelectedModelSelection },
+            threadId: nextThreadId,
+            messageId: newMessageId(),
+            text: btwQuestion,
+            createdAt: new Date().toISOString(),
+          }),
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        setBtwChat({ environmentId, parentId: activeThread.id, threadId: nextThreadId });
+        if (promptRef.current === promptForSend) {
+          promptRef.current = "";
+          clearComposerDraftContent(composerDraftTarget);
+        }
+        composerRef.current?.resetCursorState();
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not open BTW",
+          description: error instanceof Error ? error.message : "Try again.",
+        });
+      } finally {
+        btwCreating.current = false;
+      }
+      return;
+    }
     const feedbackCommand =
       ctxSelectedProvider === "codex" &&
       composerImages.length === 0 &&
@@ -8140,6 +8241,17 @@ export default function ChatView(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      {btwChat &&
+        btwChat.environmentId === environmentId &&
+        btwChat.parentId === activeThread?.id && (
+          <BtwPanel
+            {...btwChat}
+            onClose={() => {
+              discardedBtw.current.add(btwChat.threadId);
+              setBtwChat(null);
+            }}
+          />
+        )}
       {rightPanelControlsAtRoot ? panelLayoutControls : null}
       <div
         className={cn(
