@@ -46,6 +46,7 @@ import {
   renderMacPasskeyEntitlements,
   resolveClerkPasskeyNativeArtifacts,
   resolveMacPasskeySigningConfiguration,
+  resolveOptionalMacPasskeySigningConfiguration,
   resolveDesktopRuntimeDependencies,
   resolveMacStageDependencies,
   resolveFffNativeDependencies,
@@ -92,6 +93,27 @@ import {
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+
+it("allows Developer ID builds to explicitly omit native passkey provisioning", () => {
+  assert.equal(
+    resolveOptionalMacPasskeySigningConfiguration({ T3CODE_MACOS_PASSKEYS_ENABLED: "false" }),
+    undefined,
+  );
+  // Missing or mistyped switches must retain the existing validation.
+  assert.throws(() => resolveOptionalMacPasskeySigningConfiguration({}));
+  assert.throws(() =>
+    resolveOptionalMacPasskeySigningConfiguration({ T3CODE_MACOS_PASSKEYS_ENABLED: "flase" }),
+  );
+  const env = {
+    T3CODE_APPLE_TEAM_ID: "GPYS228MLV",
+    T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/test.provisionprofile",
+    T3CODE_CLERK_PASSKEY_RP_DOMAINS: "example.com",
+  };
+  assert.deepEqual(
+    resolveOptionalMacPasskeySigningConfiguration(env),
+    resolveMacPasskeySigningConfiguration(env),
+  );
+});
 
 // A minimal stand-in for the staged sidecar roots packed into the WSL archive.
 const stageWslRuntimeTreeFixture = Effect.fn("stageWslRuntimeTreeFixture")(function* (
@@ -1843,10 +1865,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         true,
       );
 
-      assert.match(
-        String(unsignedConfig.afterPack),
-        /[\\/]scripts[\\/]sign-macos-adhoc\.ts$/,
-      );
+      assert.match(String(unsignedConfig.afterPack), /[\\/]scripts[\\/]sign-macos-adhoc\.ts$/);
       assert.notProperty(signedConfig, "afterPack");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );

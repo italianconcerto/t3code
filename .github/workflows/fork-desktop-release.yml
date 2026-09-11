@@ -107,20 +107,42 @@ jobs:
           tar -tzf "release/t3-${{ steps.version.outputs.version }}.tgz" \
             | grep -qx 'package/dist/resource-monitor/linux-x64/t3-resource-monitor'
 
-      - name: Build ad-hoc signed macOS release
+      - name: Build Developer ID signed macOS release
         shell: bash
         env:
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CSC_NAME: "GradientLabs S.R.L. (GPYS228MLV)"
+          # This fork has no Associated Domains profile for native Clerk passkeys.
+          T3CODE_MACOS_PASSKEYS_ENABLED: "false"
         run: |
           set -euo pipefail
+          test -n "$CSC_LINK" || { echo "Missing MACOS_CERTIFICATE secret"; exit 1; }
+          test -n "$CSC_KEY_PASSWORD" || { echo "Missing MACOS_CERTIFICATE_PASSWORD secret"; exit 1; }
           vp run dist:desktop:artifact \
             --platform mac \
             --target dmg \
             --arch arm64 \
             --build-version "${{ steps.version.outputs.version }}" \
-            --adhoc-signed \
+            --signed \
             --verbose
+
+      - name: Verify distributed macOS signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          verification_dir=$(mktemp -d "$RUNNER_TEMP/t3-signature.XXXXXX")
+          archives=(release/*.zip)
+          test "${#archives[@]}" -eq 1
+          ditto -x -k "${archives[0]}" "$verification_dir"
+          apps=("$verification_dir"/*.app)
+          test "${#apps[@]}" -eq 1
+          codesign --verify --deep --strict --verbose=2 "${apps[0]}"
+          codesign -dv --verbose=4 "${apps[0]}" 2> "$verification_dir/signature.txt"
+          grep -Fx 'TeamIdentifier=GPYS228MLV' "$verification_dir/signature.txt"
+          grep -Fx 'Authority=Developer ID Application: GradientLabs S.R.L. (GPYS228MLV)' "$verification_dir/signature.txt"
 
       - name: Publish fork release
         uses: softprops/action-gh-release@v3
