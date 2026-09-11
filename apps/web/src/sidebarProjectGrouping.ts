@@ -126,11 +126,11 @@ export function buildSidebarProjectPickerEntries(input: {
 }) {
   const preferredProjectRef = input.preferredProjectRef;
   const entries = input.groups.flatMap((group): SidebarProjectPickerEntry[] => {
-    const isPreferred = preferredProjectRef
+    const containsPreferred = preferredProjectRef
       ? group.memberProjectRefs.some(
-          (projectRef) =>
-            projectRef.environmentId === preferredProjectRef.environmentId &&
-            projectRef.projectId === preferredProjectRef.projectId,
+          (ref) =>
+            ref.environmentId === preferredProjectRef.environmentId &&
+            ref.projectId === preferredProjectRef.projectId,
         )
       : false;
     const preferredProject = preferredProjectRef
@@ -143,15 +143,21 @@ export function buildSidebarProjectPickerEntries(input: {
           (project) => project.environmentId === preferredProjectRef.environmentId,
         ))
       : null;
-    const targetProject =
+    const firstProject =
       preferredProject ??
       group.memberProjects.find(
         (project) => project.environmentId === group.environmentId && project.id === group.id,
       ) ??
       group.memberProjects[0];
-    if (!targetProject) return [];
-
-    return [{ group, targetProject, isPreferred }];
+    // Sidebar grouping is visual. A picker must expose every concrete target,
+    // otherwise opening a remote checkout hides its local counterpart.
+    return [...group.memberProjects]
+      .sort((left, right) => Number(right === firstProject) - Number(left === firstProject))
+      .map((targetProject) => ({
+        group,
+        targetProject,
+        isPreferred: containsPreferred && targetProject === preferredProject,
+      }));
   });
   const preferredIndex = entries.findIndex((entry) => entry.isPreferred);
   if (preferredIndex <= 0) return entries;

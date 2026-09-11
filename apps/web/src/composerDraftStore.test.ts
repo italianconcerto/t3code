@@ -1319,6 +1319,46 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(draftByKey(draftId)).toBeUndefined();
   });
 
+  it("preserves an empty sibling-environment draft while opening the same repository elsewhere", () => {
+    const store = useComposerDraftStore.getState();
+    const logicalKey = "github.com/example/shared";
+    store.setLogicalProjectDraftThreadId(logicalKey, projectRef, draftId, {
+      threadId,
+      environmentSelection: "manual",
+    });
+    store.setLogicalProjectDraftThreadId(logicalKey, remoteProjectRef, otherDraftId, {
+      threadId: otherThreadId,
+      environmentSelection: "manual",
+    });
+    expect(store.getDraftSession(draftId)).toMatchObject({
+      environmentId: projectRef.environmentId,
+      projectId: projectRef.projectId,
+      environmentSelection: "manual",
+    });
+    expect(store.getDraftSession(otherDraftId)).toMatchObject({
+      environmentId: remoteProjectRef.environmentId,
+      projectId: remoteProjectRef.projectId,
+      environmentSelection: "manual",
+    });
+    store.setLogicalProjectDraftThreadId(logicalKey, projectRef, draftId, {
+      threadId,
+      environmentSelection: "manual",
+    });
+    expect(store.getDraftSession(otherDraftId)?.environmentId).toBe(remoteProjectRef.environmentId);
+    for (let index = 0; index < 6; index++) {
+      const target = index % 2 === 0 ? remoteProjectRef : projectRef;
+      const reusable = store.getDraftSessionByProjectRef(target);
+      expect(reusable).not.toBeNull();
+      store.setLogicalProjectDraftThreadId(logicalKey, target, reusable!.draftId, {
+        threadId: reusable!.threadId,
+        environmentSelection: "manual",
+      });
+    }
+    expect(Object.keys(useComposerDraftStore.getState().draftThreadsByThreadKey).sort()).toEqual(
+      [draftId, otherDraftId].sort(),
+    );
+  });
+
   it("keeps invested composer drafts alive unmapped when remapping a project to a new draft thread", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });

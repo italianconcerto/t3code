@@ -41,6 +41,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import { useClientSettings } from "./useSettings";
 
 interface NewThreadWorkspaceOptions {
+  environmentSelection?: "auto" | "manual";
   branch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
@@ -52,6 +53,9 @@ interface NewThreadWorkspaceOptions {
 // state. Every reuse path applies exactly this set.
 function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undefined) {
   return {
+    ...(options?.environmentSelection !== undefined
+      ? { environmentSelection: options.environmentSelection, loadBalancedEnvironmentId: null }
+      : {}),
     ...(options?.branch !== undefined ? { branch: options.branch } : {}),
     ...(options?.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
     ...(options?.envMode !== undefined ? { envMode: options.envMode } : {}),
@@ -77,6 +81,7 @@ export function useNewThreadHandler() {
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
         startFromOrigin?: boolean;
+        environmentSelection?: "auto" | "manual";
         replace?: boolean;
       },
       // Which draft the thread ended up in, so a caller that has something to put in it — a
@@ -88,7 +93,7 @@ export function useNewThreadHandler() {
         environmentServerConfigs.get(projectRef.environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS;
       const {
         getComposerDraft,
-        getDraftSessionByLogicalProjectKey,
+        getDraftSessionByProjectRef,
         getDraftSession,
         getDraftThread,
         applyStickyState,
@@ -171,7 +176,8 @@ export function useNewThreadHandler() {
       const hasWorktreePathOption = options?.worktreePath !== undefined;
       const hasEnvModeOption = options?.envMode !== undefined;
       const hasStartFromOriginOption = options?.startFromOrigin !== undefined;
-      const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+      const hasEnvironmentSelectionOption = options?.environmentSelection !== undefined;
+      const storedDraftThread = getDraftSessionByProjectRef(projectRef);
       const storedDraftThreadRef = storedDraftThread
         ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
         : null;
@@ -193,6 +199,8 @@ export function useNewThreadHandler() {
       // drafts rather than deleting them.
       const emptyStoredDraftThread =
         reusableStoredDraftThread &&
+        reusableStoredDraftThread.environmentId === projectRef.environmentId &&
+        reusableStoredDraftThread.projectId === projectRef.projectId &&
         !composerDraftHasUserContent(getComposerDraft(reusableStoredDraftThread.draftId))
           ? reusableStoredDraftThread
           : null;
@@ -211,6 +219,7 @@ export function useNewThreadHandler() {
             hasWorktreePathOption ||
             hasEnvModeOption ||
             hasStartFromOriginOption;
+          const environmentContext = pickExplicitWorkspaceOptions(options);
           // Resurrecting an empty stored draft must not resurrect its stale
           // context: explicit workspace options win outright; otherwise the
           // env context resets to the configured defaults so drafts seeded
@@ -244,8 +253,7 @@ export function useNewThreadHandler() {
             const promotedMeanwhile =
               storedDraftThreadRef !== null && readThreadShell(storedDraftThreadRef) !== null;
             const remappedMeanwhile =
-              getDraftSessionByLogicalProjectKey(logicalProjectKey)?.draftId !==
-              emptyStoredDraftThread.draftId;
+              getDraftSessionByProjectRef(projectRef)?.draftId !== emptyStoredDraftThread.draftId;
             const investedMeanwhile = composerDraftHasUserContent(
               getComposerDraft(emptyStoredDraftThread.draftId),
             );
@@ -265,6 +273,7 @@ export function useNewThreadHandler() {
           if (workspaceContext) {
             setDraftThreadContext(emptyStoredDraftThread.draftId, {
               ...workspaceContext,
+              ...environmentContext,
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
             });
@@ -302,6 +311,7 @@ export function useNewThreadHandler() {
             {
               threadId: emptyStoredDraftThread.threadId,
               ...workspaceContext,
+              ...environmentContext,
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
             },
@@ -333,6 +343,8 @@ export function useNewThreadHandler() {
         latestActiveDraftThread &&
         currentRouteTarget?.kind === "draft" &&
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
+        latestActiveDraftThread.environmentId === projectRef.environmentId &&
+        latestActiveDraftThread.projectId === projectRef.projectId &&
         latestActiveDraftThread.promotedTo == null &&
         // Same content rule as above: a new-thread request while viewing an
         // invested draft mints a fresh one instead of repurposing it.
@@ -342,7 +354,8 @@ export function useNewThreadHandler() {
           hasBranchOption ||
           hasWorktreePathOption ||
           hasEnvModeOption ||
-          hasStartFromOriginOption
+          hasStartFromOriginOption ||
+          hasEnvironmentSelectionOption
         ) {
           setDraftThreadContext(currentRouteTarget.draftId, pickExplicitWorkspaceOptions(options));
         }
@@ -371,9 +384,11 @@ export function useNewThreadHandler() {
         // draft for this logical project in the meantime. Registering ours
         // too would evict that draft while its navigation is in flight —
         // reuse the winner instead, like the synchronous path above does.
-        const racedDraft = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+        const racedDraft = getDraftSessionByProjectRef(projectRef);
         if (
           racedDraft &&
+          racedDraft.environmentId === projectRef.environmentId &&
+          racedDraft.projectId === projectRef.projectId &&
           // Only a draft REGISTERED during the await counts as a raced
           // winner. An invested draft this invocation deliberately declined
           // to reuse is still mapped at this point — reusing it here would
@@ -404,6 +419,7 @@ export function useNewThreadHandler() {
           return { draftId: racedDraft.draftId, threadId: racedDraft.threadId };
         }
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
+          ...pickExplicitWorkspaceOptions(options),
           threadId,
           createdAt,
           branch: options?.branch ?? null,

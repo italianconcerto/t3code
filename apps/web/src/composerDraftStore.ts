@@ -2566,6 +2566,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return toProjectDraftSession(DraftId.make(draftId), draftThread);
             }
           }
+          let fallback: ProjectDraftSession | null = null;
           for (const [draftId, draftThread] of Object.entries(state.draftThreadsByThreadKey)) {
             if (isDraftThreadPromoting(draftThread)) {
               continue;
@@ -2574,10 +2575,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               draftThread.projectId === projectRef.projectId &&
               draftThread.environmentId === projectRef.environmentId
             ) {
-              return toProjectDraftSession(DraftId.make(draftId), draftThread);
+              const session = toProjectDraftSession(DraftId.make(draftId), draftThread);
+              if (!composerDraftHasUserContent(state.draftsByThreadKey[draftId])) return session;
+              fallback ??= session;
             }
           }
-          return null;
+          return fallback;
         },
         getDraftSession: (draftId) => get().draftThreadsByThreadKey[draftId] ?? null,
         getDraftSessionByRef: (threadRef) => {
@@ -2684,6 +2687,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
+              // A sibling checkout is a different navigation target. Removing
+              // its open draft here redirects that route before the caller's
+              // navigation can land, reopening the wrong environment.
+              previousDraftThread?.environmentId === projectRef.environmentId &&
+              previousDraftThread.projectId === projectRef.projectId &&
               !isComposerThreadKeyInUse(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
                 previousThreadKeyForLogicalProject,

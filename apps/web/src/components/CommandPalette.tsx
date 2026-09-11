@@ -102,7 +102,7 @@ import {
   selectActiveRightPanel,
   useRightPanelStore,
 } from "../rightPanelStore";
-import { getLatestThreadForProject, sortThreads } from "../lib/threadSort";
+import { getLatestThreadForProject } from "../lib/threadSort";
 import {
   cn,
   getLocalFileManagerName,
@@ -1011,28 +1011,11 @@ function OpenCommandPaletteDialog(props: {
 
   const openProjectFromSearch = useMemo(
     () => async (project: (typeof projects)[number]) => {
-      const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
-      const groupedProjectKeys = group
-        ? new Set(
-            group.memberProjectRefs.map(
-              (projectRef) => `${projectRef.environmentId}:${projectRef.projectId}`,
-            ),
-          )
-        : null;
-      const latestThread = groupedProjectKeys
-        ? (sortThreads(
-            threads.filter(
-              (thread) =>
-                thread.archivedAt === null &&
-                groupedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
-            ),
-            clientSettings.sidebarThreadSortOrder,
-          )[0] ?? null)
-        : getLatestThreadForProject(
-            threads.filter((thread) => thread.environmentId === project.environmentId),
-            project.id,
-            clientSettings.sidebarThreadSortOrder,
-          );
+      const latestThread = getLatestThreadForProject(
+        threads.filter((thread) => thread.environmentId === project.environmentId),
+        project.id,
+        clientSettings.sidebarThreadSortOrder,
+      );
       if (latestThread) {
         await navigate({
           to: "/$environmentId/$threadId",
@@ -1043,15 +1026,11 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
-      await handleNewThread(scopeProjectRef(project.environmentId, project.id));
+      await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
+        environmentSelection: "manual",
+      });
     },
-    [
-      clientSettings.sidebarThreadSortOrder,
-      handleNewThread,
-      navigate,
-      projectGroupByTargetKey,
-      threads,
-    ],
+    [clientSettings.sidebarThreadSortOrder, handleNewThread, navigate, threads],
   );
 
   const projectSearchItems = useMemo(
@@ -1060,15 +1039,22 @@ function OpenCommandPaletteDialog(props: {
         projects: pickerProjects,
         valuePrefix: "project",
         searchTerms: (project) => {
-          const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
-          return (
-            group?.memberProjects.flatMap((member) => [member.title, member.workspaceRoot]) ?? []
-          );
+          const location = projectEnvironmentLocationById.get(project.environmentId);
+          return [project.title, project.workspaceRoot, ...(location ? [location.label] : [])];
         },
+        renderDescription: (project) => (
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate">
+              {projectEnvironmentLocationById.get(project.environmentId)?.label ?? "Remote"}
+            </span>
+            <CommandPaletteMetaDot />
+            <span className="truncate">{project.workspaceRoot}</span>
+          </span>
+        ),
         icon: projectFavicon,
         runProject: openProjectFromSearch,
       }),
-    [openProjectFromSearch, pickerProjects, projectGroupByTargetKey],
+    [openProjectFromSearch, pickerProjects, projectEnvironmentLocationById],
   );
 
   const projectThreadItems = useMemo(
@@ -1078,13 +1064,8 @@ function OpenCommandPaletteDialog(props: {
           projects: pickerProjects,
           valuePrefix: "new-thread-in",
           searchTerms: (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const location = projectEnvironmentLocationById.get(project.environmentId);
-            return [
-              ...(group?.memberProjects.flatMap((member) => [member.title, member.workspaceRoot]) ??
-                []),
-              ...(location ? [location.label] : []),
-            ];
+            return [project.title, project.workspaceRoot, ...(location ? [location.label] : [])];
           },
           renderDescription: (project) => {
             const location = projectEnvironmentLocationById.get(project.environmentId) ?? {
@@ -1111,29 +1092,13 @@ function OpenCommandPaletteDialog(props: {
           },
           icon: projectFavicon,
           runProject: async (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
-            const contextualRefBelongsToGroup =
-              contextualProjectRef !== null &&
-              group?.memberProjectRefs.some(
-                (projectRef) =>
-                  projectRef.environmentId === contextualProjectRef.environmentId &&
-                  projectRef.projectId === contextualProjectRef.projectId,
-              );
-            await handleNewThread(
-              contextualRefBelongsToGroup
-                ? contextualProjectRef
-                : scopeProjectRef(project.environmentId, project.id),
-            );
+            await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
+              environmentSelection: "manual",
+            });
           },
         }),
       ),
-    [
-      contextualProjectRef,
-      handleNewThread,
-      pickerProjects,
-      projectEnvironmentLocationById,
-      projectGroupByTargetKey,
-    ],
+    [handleNewThread, pickerProjects, projectEnvironmentLocationById],
   );
 
   const allThreadItems = useMemo(
@@ -1837,7 +1802,9 @@ function OpenCommandPaletteDialog(props: {
           });
         } else {
           const navigationResult = await settlePromise(() =>
-            handleNewThread(scopeProjectRef(existing.environmentId, existing.id)),
+            handleNewThread(scopeProjectRef(existing.environmentId, existing.id), {
+              environmentSelection: "manual",
+            }),
           );
           if (navigationResult._tag === "Failure") {
             const error = squashAtomCommandFailure(navigationResult);
@@ -1881,7 +1848,9 @@ function OpenCommandPaletteDialog(props: {
       }
 
       const navigationResult = await settlePromise(() =>
-        handleNewThread(scopeProjectRef(input.environmentId, projectId)),
+        handleNewThread(scopeProjectRef(input.environmentId, projectId), {
+          environmentSelection: "manual",
+        }),
       );
       if (navigationResult._tag === "Failure") {
         const error = squashAtomCommandFailure(navigationResult);

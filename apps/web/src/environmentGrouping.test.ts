@@ -286,7 +286,7 @@ describe("environment grouping", () => {
     ).not.toBe(repositoryIdentity.canonicalKey);
   });
 
-  it("builds one picker entry per logical project and targets the preferred environment", () => {
+  it("keeps both environment targets visible and prefers the current one", () => {
     const primary = makeProject({ repositoryIdentity });
     const remote = makeProject({
       id: ProjectId.make("project-remote"),
@@ -313,7 +313,7 @@ describe("environment grouping", () => {
       },
     });
 
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(3);
     expect(entries[0]?.group.projectKey).toBe(repositoryIdentity.canonicalKey);
     expect(entries[0]?.targetProject).toMatchObject({
       environmentId: remoteEnvironmentId,
@@ -321,6 +321,11 @@ describe("environment grouping", () => {
     });
     expect(entries[0]?.isPreferred).toBe(true);
     expect(entries[1]?.group.displayName).toBe("separate");
+    expect(entries[2]?.targetProject).toMatchObject({
+      environmentId: primaryEnvironmentId,
+      id: primary.id,
+    });
+    expect(entries[2]?.isPreferred).toBe(false);
   });
 
   it("keeps the current environment when available and falls back otherwise", () => {

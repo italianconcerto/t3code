@@ -90,7 +90,12 @@ export function DraftHeroHeadline({
     [activeProjectRef, projectGroups],
   );
   const projectEntryByKey = useMemo(
-    () => new Map(projectPickerEntries.map((entry) => [entry.group.projectKey, entry] as const)),
+    () =>
+      new Map(
+        projectPickerEntries.map(
+          (entry) => [entry.targetProject.physicalProjectKey, entry] as const,
+        ),
+      ),
     [projectPickerEntries],
   );
   const activeProjectGroup =
@@ -101,7 +106,12 @@ export function DraftHeroHeadline({
             (projectRef) => scopedProjectKey(projectRef) === scopedProjectKey(activeProjectRef),
           ),
         ) ?? null);
-  const activeProjectKey = activeProjectGroup?.projectKey ?? "";
+  const activeProjectKey =
+    projectPickerEntries.find(
+      ({ targetProject }) =>
+        targetProject.environmentId === activeProjectRef?.environmentId &&
+        targetProject.id === activeProjectRef?.projectId,
+    )?.targetProject.physicalProjectKey ?? "";
   const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
   const hasResolvedProject = activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
@@ -146,6 +156,7 @@ export function DraftHeroHeadline({
               entry.group.projectKey,
               scopeProjectRef(project.environmentId, project.id),
               draftId,
+              { environmentSelection: "manual", loadBalancedEnvironmentId: null },
             );
             if (!hasExplicitComposerModelSelection(currentDraft)) {
               applyStickyState(draftId);
@@ -162,15 +173,28 @@ export function DraftHeroHeadline({
             }
           }}
         >
-          {projectPickerEntries.map(({ group }) => {
+          {projectPickerEntries.map(({ group, targetProject }) => {
             return (
-              <MenuRadioItem key={group.projectKey} value={group.projectKey} closeOnClick>
+              <MenuRadioItem
+                key={targetProject.physicalProjectKey}
+                value={targetProject.physicalProjectKey}
+                closeOnClick
+              >
                 <Tooltip>
                   <TooltipTrigger render={<span className="block min-w-0 truncate" />}>
                     {group.displayName}
+                    <span className="block text-xs text-muted-foreground">
+                      {targetProject.environmentLabel ??
+                        (targetProject.environmentId === primaryEnvironmentId
+                          ? "Local"
+                          : "Remote")}{" "}
+                      · {targetProject.workspaceRoot}
+                    </span>
                   </TooltipTrigger>
                   <TooltipPopup side="top" className="max-w-80">
-                    {group.displayName}
+                    {group.displayName} ·{" "}
+                    {targetProject.environmentLabel ?? targetProject.environmentId} ·{" "}
+                    {targetProject.workspaceRoot}
                   </TooltipPopup>
                 </Tooltip>
               </MenuRadioItem>

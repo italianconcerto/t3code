@@ -6,6 +6,7 @@ const testState = vi.hoisted(() => {
   let storedDraft: {
     readonly draftId: string;
     readonly environmentId: string;
+    readonly projectId: string;
     readonly promotedTo: null;
     readonly threadId: string;
   } | null = null;
@@ -20,7 +21,7 @@ const testState = vi.hoisted(() => {
   };
   const draftStore = {
     getComposerDraft: vi.fn(() => ({})),
-    getDraftSessionByLogicalProjectKey: vi.fn(() => storedDraft),
+    getDraftSessionByProjectRef: vi.fn(() => storedDraft),
     getDraftSession: vi.fn(() => null),
     getDraftThread: vi.fn(() => null),
     applyStickyState: vi.fn(),
@@ -144,6 +145,58 @@ vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
 import { useNewThreadHandler } from "./useHandleNewThread";
 
 describe("useNewThreadHandler", () => {
+  it("does not repurpose another environment's empty draft for the same repository", async () => {
+    testState.reset({
+      draftId: "draft-local",
+      environmentId: "environment-local",
+      projectId: "project-local",
+      promotedTo: null,
+      threadId: "thread-local",
+    });
+    const pending = useNewThreadHandler()(
+      {
+        environmentId: "environment-ssh",
+        projectId: "project-remote",
+      } as never,
+      { environmentSelection: "manual" },
+    );
+    testState.completeProjectFileRead(null);
+    await pending;
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      { environmentId: "environment-ssh", projectId: "project-remote" },
+      "draft-delayed",
+      expect.objectContaining({
+        threadId: "thread-delayed",
+        environmentSelection: "manual",
+        loadBalancedEnvironmentId: null,
+      }),
+    );
+    expect(testState.router.navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { draftId: "draft-delayed" } }),
+    );
+  });
+  it("pins an explicitly selected environment when reusing its empty draft", async () => {
+    testState.reset({
+      draftId: "draft-existing",
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+      promotedTo: null,
+      threadId: "thread-existing",
+    });
+    const pending = useNewThreadHandler()(
+      { environmentId: "environment-ssh", projectId: "project-remote" } as never,
+      { environmentSelection: "manual" },
+    );
+    testState.completeProjectFileRead(null);
+    await pending;
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      { environmentId: "environment-ssh", projectId: "project-remote" },
+      "draft-existing",
+      expect.objectContaining({ environmentSelection: "manual", loadBalancedEnvironmentId: null }),
+    );
+  });
   it.each([
     ["new", null],
     [
@@ -151,6 +204,7 @@ describe("useNewThreadHandler", () => {
       {
         draftId: "draft-existing",
         environmentId: "environment-ssh",
+        projectId: "project-remote",
         promotedTo: null,
         threadId: "thread-existing",
       },
