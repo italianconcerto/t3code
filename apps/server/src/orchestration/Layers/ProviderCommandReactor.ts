@@ -1718,6 +1718,10 @@ const make = Effect.gen(function* () {
       return;
     }
     const { message, hasOtherUserMessages } = turnStart.value;
+    if (event.commandId?.startsWith("server:loop-turn:") && !loopPendingMessages.has(message.id)) {
+      yield* appendAutomationResult(thread.id, "Stale loop continuation cancelled.", message.id);
+      return;
+    }
     let providerMessageText = message.text;
     const appendTurnStartFailure = (summary: string, detail: string) =>
       appendProviderFailureActivity({
@@ -1984,12 +1988,42 @@ const make = Effect.gen(function* () {
     }
 
     const goalTurnStartedAt = DateTime.toEpochMillis(yield* DateTime.now);
+    // Only an explicit client message resumes a paused goal. Timers and
+    // provider/subagent events must not undo the user's Stop.
+    const isClientMessage = event.metadata.origin !== undefined;
+    const existingGoal = Option.getOrUndefined(yield* managedGoalRepository.get(thread.id));
+    if (existingGoal?.status === "paused" && !isClientMessage) {
+      yield* appendAutomationResult(
+        thread.id,
+        "Goal is paused until your next message.",
+        message.id,
+      );
+      return;
+    }
+    if (
+      existingGoal?.status === "paused" &&
+      existingGoal.tokenBudget !== null &&
+      existingGoal.tokensUsed >= existingGoal.tokenBudget
+    ) {
+      yield* managedGoalRepository.modify(thread.id, (current) =>
+        current.goalId === existingGoal.goalId && current.status === "paused"
+          ? { ...current, status: "budgetLimited", updatedAtMs: goalTurnStartedAt }
+          : current,
+      );
+      yield* appendAutomationResult(
+        thread.id,
+        "Goal token budget exhausted; start a new goal with a larger budget to continue.",
+        message.id,
+      );
+      return;
+    }
     managedGoalForTurn = Option.getOrUndefined(
       yield* managedGoalRepository.modify(thread.id, (current) =>
-        current.status !== "active"
+        current.status !== "active" && !(current.status === "paused" && isClientMessage)
           ? current
           : {
               ...current,
+              status: "active",
               turnNumber: current.turnNumber + 1,
               awaitingTurn: true,
               expectedProviderInstanceId:
@@ -2552,6 +2586,7 @@ const make = Effect.gen(function* () {
         return;
       case "thread.turn-interrupt-requested":
       case "thread.session-stop-requested":
+        yield* deleteLoop(event.payload.threadId);
         yield* managedGoalRepository.modify(event.payload.threadId, (goal) =>
           goal.status === "active"
             ? {

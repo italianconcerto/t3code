@@ -140,7 +140,9 @@ enforce a precise token budget. Goals survive server restarts.
 `/goal` or `/goal status` shows progress; `/goal pause`, `/goal resume`, and
 `/goal clear` manage the goal. Clearing a goal removes the objective, not the
 conversation. Resuming a blocked goal starts a fresh blocker audit.
-The thread's Stop action pauses the goal; use `/goal resume` to continue it.
+The thread's Stop action interrupts generation and pauses automatic continuation,
+without clearing the goal. Sending your next message resumes the same goal; you
+can also use `/goal resume` explicitly.
 Goals wait while background agents or monitors are active, instead of repeatedly
 starting turns that can only wait. Monitor completion does not resume a paused goal.
 

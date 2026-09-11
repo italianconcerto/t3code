@@ -573,13 +573,13 @@ describe("ProviderCommandReactor", () => {
           readEvents: engine.readEvents,
           readThreadEvents: engine.readThreadEvents,
           getThreadReplayStats: engine.getThreadReplayStats,
-          dispatch: (command) => {
+          dispatch: (command, options) => {
             if (
               command.type === "thread.turn.start" &&
               command.commandId.startsWith("managed-goal-continuation:")
             ) {
               return (input?.beforeGoalContinuationDispatch?.() ?? Effect.void).pipe(
-                Effect.andThen(engine.dispatch(command)),
+                Effect.andThen(engine.dispatch(command, options)),
               );
             }
             if (command.type === "thread.title.regeneration.complete") {
@@ -595,7 +595,7 @@ describe("ProviderCommandReactor", () => {
               command.type === "thread.session.set" && command.session.status === "ready"
                 ? (input?.beforeReadySessionDispatch?.() ?? Effect.void)
                 : Effect.void
-            ).pipe(Effect.andThen(engine.dispatch(command)));
+            ).pipe(Effect.andThen(engine.dispatch(command, options)));
           },
           get streamDomainEvents() {
             return engine.streamDomainEvents;
@@ -1900,8 +1900,99 @@ describe("ProviderCommandReactor", () => {
       await harness.drain();
       expect(await harness.readManagedGoal()).toMatchObject({ status: "paused" });
       expect(harness.sendTurn).toHaveBeenCalledOnce();
+      // A server-originated wakeup cannot resume a stopped goal.
+      await harness.runEffect(
+        harness.engine.dispatch(commandInput("Background completed", "wake-paused")),
+      );
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
+      expect(await harness.readManagedGoal()).toMatchObject({ status: "paused" });
+      // Sending a real client message resumes the same objective, not a new goal.
+      await harness.runEffect(
+        harness.engine.dispatch(commandInput("Continue with my correction", "resume-by-message"), {
+          origin: terminal === "completed" ? { surface: "web" } : {},
+        }),
+      );
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+      expect(harness.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ input: expect.stringContaining("Continue with my correction") }),
+      );
+      expect(harness.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ input: expect.stringContaining("Check progress") }),
+      );
+      expect(await harness.readManagedGoal()).toMatchObject({
+        goalId: claimedGoal?.goalId,
+        status: "active",
+        awaitingTurn: true,
+      });
     },
   );
+
+  it("does not revive a stopped loop from its queued start", async () => {
+    const harness = await createHarness({ testClock: true });
+    await dispatchAutomation(harness, "/loop 30m Check progress", "loop-to-stop");
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stop-loop"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+    await harness.runEffect(
+      harness.engine.dispatch({
+        ...commandInput("Check progress", "queued-loop"),
+        commandId: CommandId.make("server:loop-turn:queued-before-stop"),
+      }),
+    );
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(await harness.readScheduledLoop()).toBeUndefined();
+  });
+
+  it("does not implicitly resume a paused goal after late usage exhausts its budget", async () => {
+    const harness = await createHarness({ testClock: true });
+    const threadId = ThreadId.make("thread-1");
+    await dispatchAutomation(harness, "/goal --budget 12 Finish it", "limited-goal");
+    await harness.drain();
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stop-limited-goal"),
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+    await harness.emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: EventId.make("late-limited-terminal"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      turnId: asTurnId("turn-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        state: "completed",
+        tokenUsage: {
+          usageStatus: "complete",
+          usageScope: "main_agent",
+          hasSubagents: false,
+          inputTokens: 10,
+          outputTokens: 2,
+        },
+      },
+    });
+    await harness.drain();
+    await harness.runEffect(
+      harness.engine.dispatch(commandInput("Continue", "budget-resume"), { origin: {} }),
+    );
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledOnce();
+    expect(await harness.readManagedGoal()).toMatchObject({ status: "budgetLimited" });
+  });
 
   it("recovers a persisted loop when the reactor starts", async () => {
     const harness = await createHarness({ testClock: true, scheduledLoopBeforeStart: true });

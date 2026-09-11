@@ -1666,8 +1666,8 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
 /**
  * Which client connection dispatched the command that produced an event.
  * Stamped by the orchestration engine on client-dispatched commands; absent on
- * provider/server-originated events and on commands from clients too old to
- * report it.
+ * provider/server-originated events. Older clients have an empty origin;
+ * historical events written by older servers may lack it entirely.
  */
 export const OrchestrationClientOrigin = Schema.Struct({
   surface: Schema.optional(ClientSurface),
