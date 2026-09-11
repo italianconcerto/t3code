@@ -209,6 +209,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertToTurnCount: (targetTurnCount: number) => void;
+  onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
@@ -321,6 +322,7 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   supportsConversationRollback: boolean;
   onRevertToTurnCount: (targetTurnCount: number) => void;
+  onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -379,6 +381,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   supportsConversationRollback,
   onRevertToTurnCount,
+  onEditMessage,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   isRevertingCheckpoint,
   onImageExpand,
@@ -748,6 +751,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertToTurnCount,
+      onEditMessage,
       onUseArtifactTemplate,
       onImageExpand,
       onFileOpen,
@@ -772,6 +776,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertToTurnCount,
+      onEditMessage,
       onUseArtifactTemplate,
       onImageExpand,
       onFileOpen,
@@ -1369,6 +1374,10 @@ function UserVideoAttachment({ file }: { readonly file: ChatFileAttachment }) {
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(row.message.text);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const resources = useMemo(
     () => selectMessageImageResources(row.message.attachments),
     [row.message.attachments],
@@ -1562,12 +1571,66 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ))}
           </div>
         ) : null}
-        <CollapsibleUserMessageBody
-          text={elementContextState.promptText}
-          terminalContexts={terminalContexts}
-          skills={ctx.skills}
-          markdownCwd={ctx.markdownCwd}
-        />
+        {editing ? (
+          <div className="space-y-2">
+            <textarea
+              aria-label="Edit message"
+              className="min-h-28 w-full resize-y rounded-md border p-2"
+              value={editText}
+              disabled={editBusy}
+              onChange={(event) => setEditText(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Starts a new conversation from here. Original chat is kept. Workspace files are not
+              restored.
+            </p>
+            {editError && (
+              <p role="alert" className="text-xs text-destructive">
+                {editError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={editBusy}
+                onClick={() => setEditing(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={editBusy || (!editText.trim() && !row.message.attachments?.length)}
+                onClick={async () => {
+                  if (!ctx.onEditMessage || editBusy) return;
+                  setEditBusy(true);
+                  setEditError(null);
+                  try {
+                    await ctx.onEditMessage(row.message.id, editText);
+                    setEditing(false);
+                  } catch (error) {
+                    setEditError(
+                      error instanceof Error
+                        ? error.message
+                        : "Could not restart from this message.",
+                    );
+                  } finally {
+                    setEditBusy(false);
+                  }
+                }}
+              >
+                {editBusy ? "Starting…" : "Save and restart"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <CollapsibleUserMessageBody
+            text={elementContextState.promptText}
+            terminalContexts={terminalContexts}
+            skills={ctx.skills}
+            markdownCwd={ctx.markdownCwd}
+          />
+        )}
       </div>
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
@@ -1580,6 +1643,21 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             </TooltipPopup>
           </Tooltip>
           <div className="flex items-center gap-0.5">
+            {ctx.onEditMessage && (
+              <Button
+                size="xs"
+                variant="ghost"
+                aria-label="Edit and restart from this message"
+                disabled={editing}
+                onClick={() => {
+                  setEditText(row.message.text);
+                  setEditError(null);
+                  setEditing(true);
+                }}
+              >
+                Edit and restart
+              </Button>
+            )}
             {typeof revertTurnCount === "number" && (
               <RevertUserMessageButton turnCount={revertTurnCount} />
             )}

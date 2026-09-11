@@ -1,5 +1,8 @@
 import {
   CommandId,
+  type OrchestrationThread,
+  type MessageId,
+  type ThreadId,
   ORCHESTRATION_WS_METHODS,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
@@ -47,6 +50,48 @@ export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
+
+export function buildEditMessageTurnInput(input: {
+  source: Pick<
+    OrchestrationThread,
+    | "id"
+    | "projectId"
+    | "title"
+    | "modelSelection"
+    | "runtimeMode"
+    | "interactionMode"
+    | "branch"
+    | "worktreePath"
+  >;
+  sourceMessageId: MessageId;
+  threadId: ThreadId;
+  messageId: MessageId;
+  text: string;
+  createdAt: string;
+}): StartThreadTurnInput {
+  const { source, createdAt } = input;
+  return {
+    threadId: input.threadId,
+    message: { messageId: input.messageId, role: "user", text: input.text, attachments: [] },
+    modelSelection: source.modelSelection,
+    runtimeMode: source.runtimeMode,
+    interactionMode: source.interactionMode,
+    createdAt,
+    bootstrap: {
+      createThread: {
+        forkFrom: { threadId: source.id, messageId: input.sourceMessageId },
+        projectId: source.projectId,
+        title: `${source.title} (edited)`,
+        modelSelection: source.modelSelection,
+        runtimeMode: source.runtimeMode,
+        interactionMode: source.interactionMode,
+        branch: source.branch,
+        worktreePath: source.worktreePath,
+        createdAt,
+      },
+    },
+  };
+}
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;

@@ -1,5 +1,6 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import { ManagedAgentsNavigation } from "./ManagedAgentsNavigation";
+import { EditMessageModal } from "./EditMessageModal";
 import {
   appendCodexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
@@ -105,6 +106,7 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
+  readonly onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
   readonly selectedThread: OrchestrationThreadShell;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
@@ -254,6 +256,11 @@ const USER_INPUT_TOGGLE_TIMING = {
 };
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+  const [editingMessage, setEditingMessage] = useState<{
+    id: MessageId;
+    text: string;
+    attachments?: ReadonlyArray<unknown>;
+  } | null>(null);
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const liveKeyboardHeight = useKeyboardState((state) => state.height);
@@ -860,6 +867,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             queuedMessages={props.queuedMessages}
             dispatchingMessageId={props.dispatchingMessageId}
             onEditPendingMessage={handleEditPendingMessage}
+            onEditMessage={props.onEditMessage ? setEditingMessage : undefined}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
@@ -1049,6 +1057,18 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           </Animated.View>
         </KeyboardStickyView>
       ) : null}
+      {editingMessage && props.onEditMessage && (
+        <EditMessageModal
+          key={editingMessage.id}
+          text={editingMessage.text}
+          hasAttachments={Boolean(editingMessage.attachments?.length)}
+          onCancel={() => setEditingMessage(null)}
+          onSubmit={async (text) => {
+            await props.onEditMessage?.(editingMessage.id, text);
+            setEditingMessage(null);
+          }}
+        />
+      )}
     </View>
   );
 });

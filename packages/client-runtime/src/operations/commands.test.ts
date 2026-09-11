@@ -1,6 +1,8 @@
 import {
   CommandId,
   EnvironmentId,
+  MessageId,
+  ProviderInstanceId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ThreadId,
@@ -23,6 +25,7 @@ import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   archiveThread,
+  buildEditMessageTurnInput,
   createProject,
   reorderActiveThread,
   settleThread,
@@ -37,6 +40,35 @@ const TEST_CRYPTO_LAYER = Layer.succeed(
     digest: (_algorithm, data) => Effect.succeed(data),
   }),
 );
+
+it("branches an edited user prompt without restoring files or sharing a provider session", () => {
+  const input = buildEditMessageTurnInput({
+    source: {
+      id: ThreadId.make("original"),
+      projectId: ProjectId.make("project"),
+      title: "Original",
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "test" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: "/tmp/worktree",
+    },
+    sourceMessageId: MessageId.make("old-message"),
+    threadId: ThreadId.make("new-thread"),
+    messageId: MessageId.make("new-message"),
+    text: "edited request",
+    createdAt: "2026-09-11T10:00:00.000Z",
+  });
+  expect(input.threadId).toBe("new-thread");
+  expect(input.message.text).toBe("edited request");
+  expect(input.bootstrap?.createThread).toMatchObject({
+    forkFrom: { threadId: "original", messageId: "old-message" },
+    branch: "main",
+    worktreePath: "/tmp/worktree",
+  });
+  expect(input.bootstrap?.prepareWorktree).toBeUndefined();
+  expect(input.bootstrap?.runSetupScript).toBeUndefined();
+});
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),

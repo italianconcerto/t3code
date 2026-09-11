@@ -1070,6 +1070,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+  forkFrom: Schema.optional(Schema.Struct({ threadId: ThreadId, messageId: MessageId })),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -1296,8 +1297,9 @@ const ThreadHistoryImportCommand = Schema.Struct({
   messages: Schema.Array(
     Schema.Struct({
       messageId: MessageId,
-      role: Schema.Literals(["user", "assistant"]),
+      role: Schema.Literals(["user", "assistant", "system"]),
       text: Schema.String,
+      attachments: Schema.optional(Schema.Array(ChatAttachment)),
       createdAt: IsoDateTime,
     }),
   ).check(Schema.isNonEmpty()),

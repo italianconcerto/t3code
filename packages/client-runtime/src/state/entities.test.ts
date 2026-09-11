@@ -25,7 +25,8 @@ import { createEnvironmentProjectAtoms } from "./projectEntities.ts";
 import { createEnvironmentSnapshotAtom } from "./snapshots.ts";
 import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
 import { mergeEnvironmentThread } from "./threadDetail.ts";
-import { createEnvironmentThreadShellAtoms } from "./threadShell.ts";
+import { createEnvironmentThreadShellAtoms, waitForThreadShell } from "./threadShell.ts";
+import { vi } from "vite-plus/test";
 import { applyShellStreamEvent } from "./shellReducer.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
@@ -141,6 +142,41 @@ const SNAPSHOT: OrchestrationShellSnapshot = {
     },
   ],
 };
+
+describe("waiting for a newly created conversation", () => {
+  it("waits for the shell stream beyond one second before reporting ready", async () => {
+    vi.useFakeTimers();
+    const registry = AtomRegistry.make();
+    const atom = Atom.make<(typeof THREAD_SHELL & { environmentId: EnvironmentId }) | null>(null);
+    try {
+      let ready = false;
+      const result = waitForThreadShell(registry, atom).then((value) => {
+        ready = value;
+        return value;
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(ready).toBe(false);
+      registry.set(atom, { ...THREAD_SHELL, environmentId: ENVIRONMENT_ID });
+      await expect(result).resolves.toBe(true);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("reports a sync timeout rather than claiming the new route is ready", async () => {
+    vi.useFakeTimers();
+    const registry = AtomRegistry.make();
+    const atom = Atom.make<null>(null);
+    try {
+      const result = waitForThreadShell(registry, atom);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(result).resolves.toBe(false);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
 
 function shellState(snapshot: OrchestrationShellSnapshot): EnvironmentShellState {
   return {

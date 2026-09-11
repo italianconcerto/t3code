@@ -11,6 +11,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
+  MessageId,
   type ProjectScript,
 } from "@t3tools/contracts";
 import {
@@ -74,7 +75,12 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
-import { threadEnvironment } from "../../state/threads";
+import { threadEnvironment, environmentThreadShells } from "../../state/threads";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { waitForThreadShell } from "@t3tools/client-runtime/state/threads";
+import { buildEditMessageTurnInput } from "@t3tools/client-runtime/operations";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { uuidv4 } from "../../lib/uuid";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -231,6 +237,7 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const startEditedTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -841,6 +848,48 @@ function ThreadRouteContent(
 
       <View className="flex-1 bg-screen">
         <ThreadDetailScreen
+          onEditMessage={
+            serverConfig?.environment.capabilities.threadMessageFork === true
+              ? async (messageId, text) => {
+                  const threadId = ThreadId.make(uuidv4());
+                  const result = await startEditedTurn({
+                    environmentId: selectedThread.environmentId,
+                    input: buildEditMessageTurnInput({
+                      source: selectedThreadWithDraftSettings ?? selectedThread,
+                      sourceMessageId: messageId,
+                      threadId,
+                      messageId: MessageId.make(uuidv4()),
+                      text,
+                      createdAt: new Date().toISOString(),
+                    }),
+                  });
+                  if (result._tag === "Failure") {
+                    const error = squashAtomCommandFailure(result);
+                    throw error instanceof Error
+                      ? error
+                      : new Error("Could not restart from this message.");
+                  }
+                  const ready = await waitForThreadShell(
+                    appAtomRegistry,
+                    environmentThreadShells.threadShellAtom({
+                      environmentId: selectedThread.environmentId,
+                      threadId,
+                    }),
+                  );
+                  if (!ready) {
+                    Alert.alert(
+                      "Conversation created",
+                      "Still syncing. Open the new conversation from the thread list when it appears.",
+                    );
+                    return;
+                  }
+                  navigation.navigate("Thread", {
+                    environmentId: selectedThread.environmentId,
+                    threadId,
+                  });
+                }
+              : undefined
+          }
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}

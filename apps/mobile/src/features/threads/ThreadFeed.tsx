@@ -230,6 +230,9 @@ function isFreshTimestamp(input: string): boolean {
 }
 
 export interface ThreadFeedProps {
+  readonly onEditMessage?:
+    | ((message: { id: MessageId; text: string; attachments?: ReadonlyArray<unknown> }) => void)
+    | undefined;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
   readonly dispatchingMessageId: MessageId | null;
   readonly onEditPendingMessage: (message: QueuedThreadMessage) => void;
@@ -1329,6 +1332,7 @@ function renderFeedEntry(
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
+    | "onEditMessage"
   > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -1488,6 +1492,17 @@ function renderFeedEntry(
                   : null),
             }}
           >
+            {props.onEditMessage && (!entry.pendingMessage || entry.acknowledged) ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Edit and restart from this message"
+                hitSlop={8}
+                className="size-7 items-center justify-center"
+                onPress={() => props.onEditMessage?.(message)}
+              >
+                <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
+              </Pressable>
+            ) : null}
             {message.text.trim().length > 0 ? (
               <MarkdownImageAvailableWidthContext
                 value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
@@ -2703,6 +2718,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             environmentId: props.environmentId,
             dispatchingMessageId: props.dispatchingMessageId,
             onEditPendingMessage: props.onEditPendingMessage,
+            onEditMessage: props.onEditMessage,
             copiedRowId,
             expandedWorkRows,
             workRowSizing,
@@ -2736,6 +2752,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [
       props.dispatchingMessageId,
       props.onEditPendingMessage,
+      props.onEditMessage,
       copiedRowId,
       disclosureToggleSettling,
       expandedWorkRows,

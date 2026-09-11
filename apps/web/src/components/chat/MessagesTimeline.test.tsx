@@ -272,6 +272,46 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps an edited draft after failure and allows cancel without changing the original", async () => {
+    class TestElement {
+      readonly nodeType = 1;
+    }
+    vi.stubGlobal("Element", TestElement);
+    vi.stubGlobal("HTMLElement", TestElement);
+    Object.assign(window, { Element: TestElement, HTMLElement: TestElement });
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    let renderer: ReactTestRenderer | undefined;
+    const entry = buildUserTimelineEntry("Original prompt");
+    const edit = vi.fn().mockRejectedValue(new Error("Server disconnected"));
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline {...buildProps()} timelineEntries={[entry]} onEditMessage={edit} />,
+        );
+      });
+      const button = (label: string) =>
+        renderer!.root
+          .findAllByType("button")
+          .find((node) => node.props["aria-label"] === label || node.children.includes(label))!;
+      await act(() => button("Edit and restart from this message").props.onClick());
+      const editor = () => renderer!.root.findByType("textarea");
+      expect(editor().props.value).toBe("Original prompt");
+      await act(() => editor().props.onChange({ target: { value: "Edited prompt" } }));
+      await act(() => button("Save and restart").props.onClick());
+      expect(editor().props.value).toBe("Edited prompt");
+      expect(JSON.stringify(renderer!.toJSON())).toContain("Server disconnected");
+      expect(entry.message.text).toBe("Original prompt");
+      await act(() => button("Cancel").props.onClick());
+      expect(renderer!.root.findAllByType("textarea")).toHaveLength(0);
+      await act(() => button("Edit and restart from this message").props.onClick());
+      expect(editor().props.value).toBe("Original prompt");
+    } finally {
+      await act(() => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");

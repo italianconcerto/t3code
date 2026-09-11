@@ -230,6 +230,8 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { buildEditMessageTurnInput } from "@t3tools/client-runtime/operations";
+import { waitForThreadShell } from "@t3tools/client-runtime/state/threads";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities } from "../providerModels";
@@ -302,7 +304,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import { threadEnvironment, useEnvironmentThread } from "../state/threads";
+import { threadEnvironment, useEnvironmentThread, environmentThreadShells } from "../state/threads";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -6367,6 +6369,66 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const onEditMessage = useCallback(
+    async (messageId: MessageId, text: string) => {
+      if (
+        !activeThread ||
+        !isServerThread ||
+        serverConfig?.environment.capabilities.threadMessageFork !== true
+      ) {
+        throw new Error("Update this conversation's server to edit and restart messages.");
+      }
+      const nextThreadId = newThreadId();
+      const sendContext = composerRef.current?.getSendContext();
+      const result = await startThreadTurn({
+        environmentId,
+        input: buildEditMessageTurnInput({
+          source: {
+            ...activeThread,
+            modelSelection: sendContext?.selectedModelSelection ?? activeThread.modelSelection,
+            runtimeMode,
+            interactionMode: sendContext?.interactionMode ?? activeThread.interactionMode,
+          },
+          sourceMessageId: messageId,
+          threadId: nextThreadId,
+          messageId: newMessageId(),
+          text,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        throw error instanceof Error ? error : new Error("Could not restart from this message.");
+      }
+      const ready = await waitForThreadShell(
+        appAtomRegistry,
+        environmentThreadShells.threadShellAtom(scopeThreadRef(environmentId, nextThreadId)),
+      );
+      if (!ready) {
+        toastManager.add({
+          type: "info",
+          title: "Conversation created",
+          description: "Still syncing. Open the new conversation from the sidebar when it appears.",
+        });
+        return;
+      }
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: nextThreadId },
+      });
+    },
+    [
+      activeThread,
+      isServerThread,
+      serverConfig,
+      startThreadTurn,
+      environmentId,
+      navigate,
+      composerRef,
+      runtimeMode,
+    ],
+  );
+
   const onSend = async (
     e?: { preventDefault: () => void },
     submissionIntent: ComposerSubmissionIntent = "foreground",
@@ -8195,6 +8257,12 @@ export default function ChatView(props: ChatViewProps) {
                 onOpenTurnDiff={onOpenTurnDiff}
                 supportsConversationRollback={supportsConversationRollback}
                 onRevertToTurnCount={onRevertTimelineTurn}
+                onEditMessage={
+                  isServerThread &&
+                  serverConfig?.environment.capabilities.threadMessageFork === true
+                    ? onEditMessage
+                    : undefined
+                }
                 onUseArtifactTemplate={useArtifactTemplate}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}

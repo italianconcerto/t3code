@@ -131,6 +131,53 @@ async function waitFor(
 }
 
 describe("ProviderCommandReactor", () => {
+  it("retains a bounded excerpt and an omission notice for an oversized prior response", () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const handoff = buildProviderHandoffInput({
+      messages: [
+        {
+          id: asMessageId("large"),
+          role: "assistant",
+          text: "x".repeat(50_000) + "important tail",
+          turnId: null,
+          streaming: false,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      currentMessageId: asMessageId("edited"),
+      currentInput: "edited request",
+    });
+    expect(handoff).toContain("Earlier history omitted: yes");
+    expect(handoff).toContain("important tail");
+    expect(handoff.length).toBeLessThan(41_000);
+  });
+  it("makes earlier attachments accessible in fresh-session history without replaying the current prompt", () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const message: OrchestrationMessage = {
+      id: asMessageId("earlier"),
+      role: "user",
+      text: "Read these notes",
+      turnId: null,
+      streaming: false,
+      createdAt,
+      updatedAt: createdAt,
+      attachments: [
+        { type: "file", id: "notes", name: "notes.txt", mimeType: "text/plain", sizeBytes: 3 },
+      ],
+    };
+    const handoff = buildProviderHandoffInput({
+      messages: [
+        message,
+        { ...message, id: asMessageId("edited"), text: "edited text", attachments: [] },
+      ],
+      currentMessageId: asMessageId("edited"),
+      currentInput: "edited text",
+      attachmentsDir: "/tmp/fork-attachments",
+    });
+    expect(handoff).toContain('"path":"/tmp/fork-attachments/notes.txt"');
+    expect(handoff.match(/edited text/g)).toHaveLength(1);
+  });
   it("quotes handoff history without allowing it to spoof the current request boundary", () => {
     const createdAt = "2026-01-01T00:00:00.000Z";
     const messages: OrchestrationMessage[] = [
@@ -529,7 +576,7 @@ describe("ProviderCommandReactor", () => {
           dispatch: (command) => {
             if (
               command.type === "thread.turn.start" &&
-              command.commandId.startsWith("server:goal-turn:")
+              command.commandId.startsWith("managed-goal-continuation:")
             ) {
               return (input?.beforeGoalContinuationDispatch?.() ?? Effect.void).pipe(
                 Effect.andThen(engine.dispatch(command)),
@@ -1081,6 +1128,77 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  effectIt.effect.each([
+    "codex",
+    "claudeAgent",
+    "openrouter",
+    "opencode",
+    "cursor",
+    "grok",
+    "antigravity",
+  ])("replays imported fork history in a fresh %s session", (instanceId) =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          threadModelSelection: {
+            instanceId: ProviderInstanceId.make(instanceId),
+            model: "test-model",
+          },
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.history.import",
+        commandId: CommandId.make("fork-import"),
+        threadId,
+        messages: [
+          {
+            messageId: asMessageId("history-0"),
+            role: "user",
+            text: "Remember the color blue",
+            createdAt,
+          },
+          {
+            messageId: asMessageId("history-1"),
+            role: "assistant",
+            text: "Remembered blue",
+            createdAt,
+          },
+        ],
+      });
+      yield* Effect.promise(harness.drain);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("fork-start"),
+        threadId,
+        message: {
+          messageId: asMessageId("edited"),
+          role: "user",
+          text: "What color?",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt,
+      });
+      yield* Effect.promise(harness.drain);
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining(
+          'PRIOR_CONVERSATION_JSON=[{"role":"user","text":"Remember the color blue"',
+        ),
+      });
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining('CURRENT_REQUEST_JSON="What color?"'),
+      });
+      const options = harness.startSession.mock.calls[0]?.[1];
+      expect(options).not.toHaveProperty("resumeCursor");
+    }),
+  );
 
   effectIt.effect("retains a turn dispatched immediately after start until activation", () =>
     Effect.gen(function* () {
@@ -1636,10 +1754,13 @@ describe("ProviderCommandReactor", () => {
 
   it.each(
     (["goal", "loop"] as const).flatMap((automation) =>
-      (["local_bash", "subagent"] as const).map((taskType) => ({ automation, taskType })),
+      (["monitor", "local_bash", "subagent"] as const).map((taskType) => ({
+        automation,
+        taskType,
+      })),
     ),
   )(
-    "$automation allows background monitors but waits for agents: $taskType",
+    "$automation coordinates background work before continuing: $taskType",
     async ({ automation, taskType }) => {
       const harness = await createHarness({ testClock: true });
       const threadId = ThreadId.make("thread-1");
@@ -1690,9 +1811,9 @@ describe("ProviderCommandReactor", () => {
         status: "running",
         kind: "started",
       });
-      const blocksContinuation = taskType === "subagent";
+      const blocksContinuation = automation === "goal" || taskType === "subagent";
       expect(harness.backgroundLiveness.getThreadBackgroundLiveness(threadId)).toBe(
-        blocksContinuation ? "working" : "monitoring",
+        taskType === "subagent" ? "working" : "monitoring",
       );
       for (let interval = 0; interval < 3; interval++) {
         await harness.runEffect(TestClock.adjust("5 seconds"));
@@ -1709,6 +1830,76 @@ describe("ProviderCommandReactor", () => {
       await harness.runEffect(TestClock.adjust("5 seconds"));
       await harness.drain();
       expect(harness.sendTurn).toHaveBeenCalledTimes(initialTurns + 1);
+    },
+  );
+
+  it.each(["completed", "aborted"] as const)(
+    "manual Stop pauses a goal before a late %s event and monitor completion",
+    async (terminal) => {
+      const harness = await createHarness({ testClock: true });
+      const threadId = ThreadId.make("thread-1");
+      await dispatchAutomation(harness, "/goal Check progress", "stop-goal-start");
+      await harness.drain();
+      const claimedGoal = await harness.readManagedGoal();
+      harness.backgroundLiveness.recordTaskLiveness({
+        threadId,
+        taskId: "stop-monitor",
+        taskType: "monitor",
+        status: "running",
+        kind: "started",
+      });
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("manual-stop-goal"),
+          threadId,
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      await harness.drain();
+      expect(await harness.readManagedGoal()).toMatchObject({
+        status: "paused",
+        awaitingTurn: false,
+      });
+      expect(harness.interruptTurn).toHaveBeenCalledOnce();
+      // Reproduce a due tick whose generated start reaches the worker after Stop.
+      await harness.runEffect(
+        harness.engine.dispatch({
+          ...commandInput(
+            "Continue working toward the active goal. Verify the result before completing it.",
+            "stale-goal-start",
+          ),
+          commandId: CommandId.make(
+            `managed-goal-continuation:${claimedGoal?.goalId}:${claimedGoal?.turnNumber}`,
+          ),
+        }),
+      );
+      await harness.drain();
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
+      expect(await harness.readPendingTurnStarts()).toEqual([]);
+      await harness.emitRuntimeEvent({
+        ...(terminal === "completed"
+          ? { type: "turn.completed" as const, payload: { state: "completed" as const } }
+          : { type: "turn.aborted" as const, payload: { reason: "User stopped the agent" } }),
+        eventId: EventId.make("late-stop-terminal"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      harness.backgroundLiveness.recordTaskLiveness({
+        threadId,
+        taskId: "stop-monitor",
+        taskType: "monitor",
+        status: "completed",
+        kind: "completed",
+      });
+      await harness.drain();
+      await harness.runEffect(TestClock.adjust("10 seconds"));
+      await harness.drain();
+      expect(await harness.readManagedGoal()).toMatchObject({ status: "paused" });
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
     },
   );
 

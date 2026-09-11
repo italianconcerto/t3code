@@ -4,6 +4,7 @@ import {
 } from "@t3tools/shared/usageLimits";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -87,6 +88,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
+import { copyThreadFork, selectThreadFork } from "./orchestration/ThreadFork.ts";
 import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/LiveStreamBudget.ts";
 import {
   cleanupFailedUploadedAttachments,
@@ -529,6 +531,7 @@ const makeWsRpcLayer = (
       const providerInstallation = yield* makeProviderInstallation();
       const serverUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -1094,6 +1097,31 @@ const makeWsRpcLayer = (
             });
 
           const bootstrapProgram = Effect.gen(function* () {
+            const forkFrom = bootstrap?.createThread?.forkFrom;
+            const fork =
+              forkFrom && bootstrap
+                ? yield* Effect.gen(function* () {
+                    const source = yield* projectionSnapshotQuery.getThreadDetailById(
+                      forkFrom.threadId,
+                      { activityKinds: [] },
+                    );
+                    if (Option.isNone(source)) {
+                      return yield* new OrchestrationDispatchCommandError({
+                        message: "The original conversation is no longer available.",
+                      });
+                    }
+                    return yield* Effect.try({
+                      try: () => selectThreadFork(source.value, bootstrap),
+                      catch: (cause) =>
+                        new OrchestrationDispatchCommandError({
+                          message:
+                            cause instanceof Error
+                              ? cause.message
+                              : "Cannot branch this conversation.",
+                        }),
+                    });
+                  })
+                : undefined;
             if (bootstrap?.createThread) {
               const created = yield* dispatchFromClient({
                 type: "thread.create",
@@ -1107,6 +1135,7 @@ const makeWsRpcLayer = (
                 branch: bootstrap.createThread.branch,
                 worktreePath: bootstrap.createThread.worktreePath,
                 createdAt: bootstrap.createThread.createdAt,
+                ...(fork ? { historyImport: true as const } : {}),
               });
               // The successful create is a fence in the engine command queue:
               // every delete for the prior incarnation committed before it.
@@ -1114,6 +1143,25 @@ const makeWsRpcLayer = (
               // terminals and provider sessions under the reused thread id.
               yield* threadDeletionReactor.drainThrough(created.sequence);
               createdThread = true;
+            }
+
+            if (fork) {
+              const copied = yield* copyThreadFork(fork, command.threadId).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(ServerConfig.ServerConfig, config),
+              );
+              if (copied.history.length > 0) {
+                yield* dispatchFromClient({
+                  type: "thread.history.import",
+                  commandId: yield* serverCommandId("fork-history-import"),
+                  threadId: command.threadId,
+                  messages: copied.history,
+                });
+              }
+              return yield* dispatchFromClient({
+                ...finalTurnStartCommand,
+                message: { ...finalTurnStartCommand.message, attachments: copied.attachments },
+              });
             }
 
             if (bootstrap?.prepareWorktree) {

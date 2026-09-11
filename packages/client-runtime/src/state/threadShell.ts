@@ -7,7 +7,7 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 import { scopeThreadShell } from "./models.ts";
@@ -22,6 +22,32 @@ import {
 } from "./entities.ts";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationThreadShell> = Object.freeze([]);
+
+/** Creation receipts can arrive before the shell stream used by client routes. */
+export function waitForThreadShell(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Atom<EnvironmentThreadShell | null>,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  if (registry.get(atom) !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let finished = false;
+    let unsubscribe = () => {};
+    const finish = (ready: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(ready);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    unsubscribe = registry.subscribe(atom, (shell) => {
+      if (shell !== null) finish(true);
+    });
+    if (registry.get(atom) !== null) finish(true);
+    if (finished) unsubscribe();
+  });
+}
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
 const EMPTY_THREAD_INDEX: ReadonlyMap<ThreadId, OrchestrationThreadShell> = new Map();
 const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<

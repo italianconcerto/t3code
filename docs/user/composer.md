@@ -56,6 +56,20 @@ is unavailable or has changed, the saved quote remains readable.
 Mobile displays saved quotes and comments, but does not create citations or
 navigate to their sources.
 
+## Edit and restart from a sent message
+
+Choose **Edit and restart** on one of your sent messages, change the text, then
+save. T3 starts a new conversation with the earlier messages and your edited
+request. Later messages stay only in the original conversation. Attachments are
+copied so either conversation can be kept independently.
+
+This does not restore workspace files or undo work already performed. The new
+agent uses the workspace as it is now, in a fresh provider session. Long histories
+remain visible in the chat; the context sent to the model may be shortened.
+
+Available on web, desktop, and mobile when the connected server supports message
+branching. Assistant messages cannot be edited.
+
 ## Recall a sent prompt
 
 Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press
@@ -126,6 +140,9 @@ enforce a precise token budget. Goals survive server restarts.
 `/goal` or `/goal status` shows progress; `/goal pause`, `/goal resume`, and
 `/goal clear` manage the goal. Clearing a goal removes the objective, not the
 conversation. Resuming a blocked goal starts a fresh blocker audit.
+The thread's Stop action pauses the goal; use `/goal resume` to continue it.
+Goals wait while background agents or monitors are active, instead of repeatedly
+starting turns that can only wait. Monitor completion does not resume a paused goal.
 
 Send `/loop 5m Check the build and report failures` to repeat a prompt in this
 thread. Omit the interval for a ten-minute interval. Units are `s`, `m`, `h`, and

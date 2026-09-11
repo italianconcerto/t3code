@@ -114,6 +114,15 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
               messageId: MessageId.make(`${threadId}:000000`),
               role: "user",
               text: "Fix the bug",
+              attachments: [
+                {
+                  type: "file",
+                  id: "fork-notes",
+                  name: "notes.txt",
+                  mimeType: "text/plain",
+                  sizeBytes: 3,
+                },
+              ],
               createdAt,
             },
             {
@@ -131,7 +140,13 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
         {
           type: "thread.message-sent",
           metadata: { historyImport: true },
-          payload: { role: "user", text: "Fix the bug", turnId: null, streaming: false },
+          payload: {
+            role: "user",
+            text: "Fix the bug",
+            turnId: null,
+            streaming: false,
+            attachments: [{ id: "fork-notes" }],
+          },
         },
         {
           type: "thread.message-sent",
