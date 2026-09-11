@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { visitElements } from "../../test/reactElementTree";
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
+import { toastManager } from "../ui/toast";
 
 const atoms = vi.hoisted(() => ({
   providers: null as ReadonlyArray<ServerProvider> | null,
@@ -20,6 +21,7 @@ const atoms = vi.hoisted(() => ({
 }));
 
 const commands = vi.hoisted(() => ({
+  refreshConfig: vi.fn(),
   refresh: vi.fn(),
   updateProvider: vi.fn(),
 }));
@@ -64,11 +66,13 @@ vi.mock("react/compiler-runtime", async () => {
 
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => atoms.providers,
+  useAtomRefresh: () => commands.refreshConfig,
 }));
 
 vi.mock("../../state/server", () => ({
   EMPTY_SERVER_PROVIDERS: [],
   serverEnvironment: {
+    configProjection: () => atoms.providersAtom,
     providersValueAtom: () => atoms.providersAtom,
     refreshProviders: atoms.refreshProviders,
     updateProvider: atoms.updateProvider,
@@ -180,7 +184,10 @@ describe("EnvironmentProviderSettings routing", () => {
     settingsSearchState.targetId = null;
     settingsSearchState.effects = [];
     commands.refresh.mockReset().mockResolvedValue({ _tag: "Success" });
-    commands.updateProvider.mockReset().mockResolvedValue({ _tag: "Success" });
+    commands.refreshConfig.mockReset();
+    commands.updateProvider
+      .mockReset()
+      .mockResolvedValue({ _tag: "Success", value: { providers: [] } });
   });
 
   it("coalesces a nullable provider snapshot before rendering array-backed UI", () => {
@@ -215,7 +222,42 @@ describe("EnvironmentProviderSettings routing", () => {
       environmentId,
       input: { provider: ProviderDriverKind.make("codex"), instanceId: codexId },
     });
+    expect(commands.refreshConfig).toHaveBeenCalledOnce();
   });
+
+  it.each(["failed", "unchanged"])(
+    "reports %s updater outcomes even when the RPC succeeds",
+    async (status) => {
+      atoms.providers = [provider()];
+      const toast = vi.spyOn(toastManager, "add");
+      commands.updateProvider.mockResolvedValue({
+        _tag: "Success",
+        value: {
+          providers: [
+            {
+              ...provider(),
+              updateState: { status, message: "Updater did not install the version." },
+            },
+          ],
+        },
+      });
+      const card = visitElements(
+        renderPanel(),
+        (element) =>
+          element.props.instanceId === codexId && typeof element.props.onRunUpdate === "function",
+      );
+      (card?.props.onRunUpdate as () => void)();
+      await flushPromises();
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          description: "Updater did not install the version.",
+        }),
+      );
+      expect(commands.refreshConfig).toHaveBeenCalledOnce();
+      toast.mockRestore();
+    },
+  );
 
   it("opens the requested provider instance instead of the first provider", () => {
     settingsState.value = {

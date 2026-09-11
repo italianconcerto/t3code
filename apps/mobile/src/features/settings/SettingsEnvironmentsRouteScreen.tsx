@@ -14,6 +14,7 @@ import { splitEnvironmentSections } from "../connection/environmentSections";
 import { cn } from "../../lib/cn";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
+import { ProviderUpdatesSection } from "./ProviderUpdatesSection";
 import {
   applyShowcaseLocalEnvironmentDisplayUrls,
   resolveShowcaseEnvironmentUpdateDisplayUrl,
@@ -171,6 +172,15 @@ export function SettingsEnvironmentsRouteScreen() {
               }
             : {})}
         />
+        {connectedEnvironments
+          .filter((environment) => environment.connectionState === "connected")
+          .map((environment) => (
+            <ProviderUpdatesSection
+              key={environment.environmentId}
+              environmentId={environment.environmentId}
+              label={environment.environmentLabel}
+            />
+          ))}
       </ScrollView>
     </View>
   );

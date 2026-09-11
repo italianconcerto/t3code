@@ -38,7 +38,7 @@ const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 const makeTempDir = (name: string) =>
   Crypto.Crypto.pipe(
     Effect.flatMap((crypto) => crypto.randomUUIDv4),
-    Effect.map((id) => NodePath.join(NodeOS.tmpdir(), `${name}-${id}`)),
+    Effect.map((id) => NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), `${name}-${id}`)),
   );
 const isNativeTestCommandPath =
   (expectedPathSegment: string) =>
@@ -345,6 +345,35 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         lockKey: "codex-native",
       });
     }),
+  );
+
+  it.effect("uses an explicitly supported self-updater behind a wrapper", () =>
+    Effect.gen(function* () {
+      const wrapper = "/home/user/dev-tools/bin/claude";
+      const capabilities = yield* resolvePackageManagedProviderMaintenance(
+        {
+          provider: driver("claudeAgent"),
+          npmPackageName: "@anthropic-ai/claude-code",
+          nativeUpdate: {
+            args: ["update"],
+            isCommandPath: () => false,
+            supportsWrappedInstall: true,
+          },
+        },
+        {
+          binaryPath: wrapper,
+          resolvedCommandPath: wrapper,
+          realCommandPath: wrapper,
+          env: {},
+          platform: "linux",
+        },
+      );
+      expect(capabilities.update).toMatchObject({
+        executable: wrapper,
+        args: ["update"],
+        lockKey: "claudeAgent-native",
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("proves Windows npm ownership from the package manifest beside the shim", () =>

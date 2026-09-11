@@ -108,6 +108,8 @@ export interface PackageManagedProviderMaintenanceDefinition {
   readonly nativeUpdate: {
     readonly args: ReadonlyArray<string>;
     readonly isCommandPath: (commandPath: string) => boolean;
+    /** The CLI can identify its own installation even behind a user wrapper. */
+    readonly supportsWrappedInstall?: boolean;
     /** Environment the native updater needs to target this instance's install. */
     readonly env?: NodeJS.ProcessEnv;
   } | null;
@@ -471,6 +473,17 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     });
   }
 
+  if (nativeUpdate?.supportsWrappedInstall) {
+    return makeProviderMaintenanceCapabilities({
+      provider: definition.provider,
+      packageName,
+      updateExecutable: context.resolvedCommandPath,
+      updateArgs: nativeUpdate.args,
+      updateLockKey: `${definition.provider}-native`,
+      platform: context.platform,
+      ...(nativeUpdate.env ? { env: nativeUpdate.env } : {}),
+    });
+  }
   return manual;
 });
 

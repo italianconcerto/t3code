@@ -627,7 +627,20 @@ export function ProviderInstanceCard({
                 </code>
               ) : null}
               {versionAdvisory ? (
-                updateCommand ? (
+                onRunUpdate ? (
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="outline"
+                    className="pointer-events-auto relative shrink-0"
+                    aria-label={`Update ${displayName}`}
+                    disabled={readOnly || isUpdating}
+                    onClick={onRunUpdate}
+                  >
+                    {isUpdating ? <Spinner /> : <DownloadIcon />}
+                    {isUpdating ? "Updating" : "Update"}
+                  </Button>
+                ) : updateCommand ? (
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -743,6 +756,13 @@ export function ProviderInstanceCard({
                     {isUpdating ? <Spinner /> : <DownloadIcon />}
                     {isUpdating ? "Updating" : "Update now"}
                   </Button>
+                ) : null}
+                {!onRunUpdate && !updateCommand ? (
+                  <p className="text-xs text-muted-foreground">
+                    Automatic update is unavailable for this installation. If Binary path points to
+                    a wrapper script, select the actual provider executable so T3 can identify its
+                    installer.
+                  </p>
                 ) : null}
                 {onRunUpdate && updateCommand ? (
                   <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">

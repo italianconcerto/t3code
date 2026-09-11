@@ -1,5 +1,5 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
@@ -568,6 +568,9 @@ export function EnvironmentProviderSettings({
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
     reportFailure: false,
   });
+  const refreshConfig = useAtomRefresh(
+    serverEnvironment.configProjection({ environmentId, input: {} }),
+  );
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
@@ -665,6 +668,21 @@ export function EnvironmentProviderSettings({
           }),
         );
       }
+      if (result._tag === "Success") {
+        const state = result.value.providers.find(
+          (provider) => provider.instanceId === candidate.instanceId,
+        )?.updateState;
+        if (state?.status === "failed" || state?.status === "unchanged") {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Could not update ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
+              description: state.message ?? "Provider was not updated.",
+            }),
+          );
+        }
+        refreshConfig();
+      }
       updatingInstanceIdsRef.current.delete(candidate.instanceId);
       setUpdatingProviderInstanceIds((previous) => {
         if (!previous.has(candidate.instanceId)) {
@@ -675,7 +693,7 @@ export function EnvironmentProviderSettings({
         return next;
       });
     },
-    [environmentId, updateProvider],
+    [environmentId, updateProvider, refreshConfig],
   );
 
   interface InstanceRow {
@@ -959,15 +977,13 @@ export function EnvironmentProviderSettings({
           })
         }
         onRunUpdate={
-          mode === "editor" && showInlineUpdateButton && updateCandidate
+          showInlineUpdateButton && updateCandidate
             ? () => {
                 if (canRunInlineUpdate) void runProviderUpdate(updateCandidate);
               }
             : undefined
         }
-        isUpdating={
-          mode === "editor" && showInlineUpdateButton ? isInstanceUpdateRunning : undefined
-        }
+        isUpdating={showInlineUpdateButton ? isInstanceUpdateRunning : undefined}
       />
     );
   };
