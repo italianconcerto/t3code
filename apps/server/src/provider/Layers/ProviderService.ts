@@ -26,6 +26,7 @@ import {
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
+  ProviderSubagentInput,
   ThreadId,
   TurnId,
   type ProviderInstanceId,
@@ -2384,6 +2385,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   return {
     startSession,
+    subagent: Effect.fn("ProviderService.subagent")(function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.subagent",
+        schema: ProviderSubagentInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.subagent",
+        allowRecovery: false,
+      });
+      if (!routed.adapter.subagent)
+        return yield* toValidationError(
+          "ProviderService.subagent",
+          "This provider does not expose native subagent controls. T3-managed agent chats remain available.",
+        );
+      return yield* routed.adapter.subagent({ ...input, threadId: routed.threadId });
+    }),
     sendTurn,
     compactThread,
     goal,

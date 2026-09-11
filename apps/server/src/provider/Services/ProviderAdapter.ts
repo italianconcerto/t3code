@@ -18,6 +18,8 @@ import type {
   ProviderSessionStartInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  ProviderSubagentInput,
+  ProviderSubagentResult,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -67,6 +69,9 @@ export interface ProviderThreadSnapshot {
 }
 
 export interface ProviderAdapterShape<TError> {
+  readonly subagent?: (
+    input: ProviderSubagentInput,
+  ) => Effect.Effect<ProviderSubagentResult, TError>;
   /**
    * Provider kind implemented by this adapter.
    */

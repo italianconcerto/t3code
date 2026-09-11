@@ -58,6 +58,17 @@ If you do not want to answer, dismiss the question from its panel. Dismissing
 closes it without sending anything to Codex. This requires a Codex version that
 supports async questions.
 
+## Inspect and steer native subagents
+
+On web and desktop, open **Agents** and select a native Codex subagent to inspect
+its recent steps. **Load steps** refreshes the details retained by Codex.
+
+You can send steering while the subagent is running. Some Codex versions require
+the parent agent to relay the message; keep the parent running in that case.
+The panel distinguishes a relay request from confirmed direct delivery. A relay
+is best-effort: check the child's next steps or reply to verify it followed the
+instruction. Sending steering does not restart a stopped parent or child.
+
 ## Approve app access
 
 Codex tools can request access to another app. Respond to the named app's request

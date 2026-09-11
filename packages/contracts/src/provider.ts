@@ -126,6 +126,35 @@ export const ProviderUploadFeedbackResult = Schema.Struct({
 });
 export type ProviderUploadFeedbackResult = typeof ProviderUploadFeedbackResult.Type;
 
+export const ProviderSubagentInput = Schema.Union([
+  Schema.Struct({
+    threadId: ThreadId,
+    agentId: TrimmedNonEmptyString,
+    action: Schema.Literal("read"),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    agentId: TrimmedNonEmptyString,
+    action: Schema.Literal("steer"),
+    message: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  }),
+]);
+export type ProviderSubagentInput = typeof ProviderSubagentInput.Type;
+export const ProviderSubagentResult = Schema.Struct({
+  canSteer: Schema.Boolean,
+  steeringDelivery: Schema.optionalKey(Schema.Literals(["direct", "parent-relay"])),
+  steps: Schema.Array(
+    Schema.Struct({ id: Schema.String, type: Schema.String, text: Schema.String }),
+  ),
+});
+export type ProviderSubagentResult = typeof ProviderSubagentResult.Type;
+export class ProviderSubagentError extends Schema.TaggedError<ProviderSubagentError>()(
+  "ProviderSubagentError",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export class ProviderUploadFeedbackError extends Schema.TaggedError<ProviderUploadFeedbackError>()(
   "ProviderUploadFeedbackError",
   {

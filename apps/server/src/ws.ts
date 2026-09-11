@@ -54,6 +54,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  ProviderSubagentError,
   ProviderSetupError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
@@ -1878,6 +1879,12 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerSubagent]: (input) =>
+          providerService
+            .subagent(input)
+            .pipe(
+              Effect.mapError((cause) => new ProviderSubagentError({ message: cause.message })),
+            ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

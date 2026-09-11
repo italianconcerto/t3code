@@ -6,6 +6,8 @@ import {
   ProviderDriverKind,
   ProviderItemId,
   type ProviderInstanceId,
+  type ProviderSubagentInput,
+  type ProviderSubagentResult,
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type ProviderEvent,
@@ -42,6 +44,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+const encodeSubagentJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -216,6 +219,9 @@ export const runCodexGoalCommand = Effect.fn("runCodexGoalCommand")(function* (
 });
 
 export interface CodexSessionRuntimeShape {
+  readonly subagent: (
+    input: ProviderSubagentInput,
+  ) => Effect.Effect<ProviderSubagentResult, CodexSessionRuntimeError>;
   readonly goal: (
     command: GoalCommand,
   ) => Effect.Effect<ThreadGoal | null, CodexSessionRuntimeError>;
@@ -246,11 +252,19 @@ export interface CodexSessionRuntimeShape {
 }
 
 export type CodexSessionRuntimeError =
+  | CodexSessionRuntimeSubagentError
   | CodexErrors.CodexAppServerError
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
   | CodexSessionRuntimeThreadIdMissingError;
+
+export class CodexSessionRuntimeSubagentError extends Schema.TaggedError<CodexSessionRuntimeSubagentError>()(
+  "CodexSessionRuntimeSubagentError",
+  {
+    message: Schema.String,
+  },
+) {}
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -2348,6 +2362,122 @@ export const makeCodexSessionRuntime = (
 
     return {
       start,
+      subagent: (input) =>
+        Effect.gen(function* () {
+          const rootId = yield* readProviderThreadId;
+          if (input.agentId === rootId)
+            return yield* new CodexSessionRuntimeSubagentError({
+              message: "Select a child agent, not the parent thread.",
+            });
+          const response = yield* client.request("thread/read", {
+            threadId: input.agentId,
+            includeTurns: input.action === "read",
+          });
+          // Validate the provider-owned ancestry, not a client-supplied agent id.
+          let ancestor =
+            readThreadSpawnSource(response.thread)?.parentThreadId ??
+            response.thread.parentThreadId;
+          const seen = new Set<string>([input.agentId]);
+          while (ancestor && ancestor !== rootId && seen.size < 32 && !seen.has(ancestor)) {
+            seen.add(ancestor);
+            const parent = yield* client.request("thread/read", {
+              threadId: ancestor,
+              includeTurns: false,
+            });
+            ancestor =
+              readThreadSpawnSource(parent.thread)?.parentThreadId ?? parent.thread.parentThreadId;
+          }
+          if (ancestor !== rootId)
+            return yield* new CodexSessionRuntimeSubagentError({
+              message: "This subagent does not belong to the selected conversation.",
+            });
+          const activeTurnId = (yield* Ref.get(collabChildLiveTurnsRef)).get(input.agentId);
+          if (input.action === "steer") {
+            if (!activeTurnId)
+              return yield* new CodexSessionRuntimeSubagentError({
+                message:
+                  "The subagent is no longer running. Refresh its status before sending instructions.",
+              });
+            const steeringDelivery = yield* client
+              .request("turn/steer", {
+                threadId: input.agentId,
+                expectedTurnId: activeTurnId,
+                input: [{ type: "text", text: input.message, text_elements: [] }],
+              })
+              .pipe(
+                Effect.as("direct" as const),
+                Effect.catch((cause) =>
+                  Effect.gen(function* () {
+                    if (
+                      !cause.message.includes(
+                        "direct app-server input is not allowed for multi-agent v2 sub-agents",
+                      )
+                    )
+                      return yield* cause;
+                    const parentTurnId = (yield* Ref.get(sessionRef)).activeTurnId;
+                    if (
+                      (yield* Ref.get(collabChildLiveTurnsRef)).get(input.agentId) !== activeTurnId
+                    )
+                      return yield* new CodexSessionRuntimeSubagentError({
+                        message:
+                          "The subagent turn changed before steering could be relayed. Refresh and try again.",
+                      });
+                    if (!parentTurnId)
+                      return yield* new CodexSessionRuntimeSubagentError({
+                        message:
+                          "Codex requires the parent agent to relay this message. Resume the parent conversation before steering this native subagent.",
+                      });
+                    const request = yield* encodeSubagentJson({
+                      target: input.agentId,
+                      expectedChildTurnId: activeTurnId,
+                      message: input.message,
+                    }).pipe(Effect.orDie);
+                    yield* client.request("turn/steer", {
+                      threadId: rootId,
+                      expectedTurnId: parentTurnId,
+                      input: [
+                        {
+                          type: "text",
+                          text: `The user requested steering for an existing native subagent's current turn. Relay the message below using the collaboration send_message tool to the exact target only while that same child turn is still running; never restart the child, steer a different turn, perform its task yourself, or spawn a replacement. If the turn has finished or changed, report that delivery was skipped. Then continue your current work. Report if delivery fails. Steering request JSON: ${request}`,
+                          text_elements: [],
+                        },
+                      ],
+                    });
+                    return "parent-relay" as const;
+                  }),
+                ),
+              );
+            return { canSteer: true, steps: [], steeringDelivery };
+          }
+          let remaining = 100_000;
+          const items = response.thread.turns
+            .slice(-20)
+            .flatMap((turn) => turn.items)
+            .slice(-100)
+            .toReversed();
+          const steps = [];
+          for (const item of items) {
+            if (remaining <= 0) break;
+            const serialized = yield* encodeSubagentJson(item).pipe(Effect.orDie);
+            const limit = Math.min(remaining, 10_000);
+            const text =
+              serialized.length > limit ? `${serialized.slice(0, limit)}\n[truncated]` : serialized;
+            remaining -= text.length;
+            steps.push({ id: item.id, type: item.type, text });
+          }
+          return { canSteer: activeTurnId !== undefined, steps: steps.toReversed() };
+        }).pipe(
+          Effect.timeoutOption("10 seconds"),
+          Effect.flatMap((result) =>
+            result._tag === "Some"
+              ? Effect.succeed(result.value)
+              : Effect.fail(
+                  new CodexSessionRuntimeSubagentError({
+                    message: "Subagent request timed out. Refresh and try again.",
+                  }),
+                ),
+          ),
+        ),
       getSession: Ref.get(sessionRef),
       goal: (command) =>
         readProviderThreadId.pipe(

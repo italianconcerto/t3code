@@ -151,6 +151,33 @@ rl.on("line", (line) => {
     }
     return;
   }
+  if (method === "thread/read") {
+    const thread = script.childReadSnapshots?.[message.params?.threadId];
+    write(
+      thread
+        ? { id, result: { thread } }
+        : { id, error: { code: -32000, message: "Unknown thread" } },
+    );
+    return;
+  }
+  if (method === "turn/steer") {
+    if (script.nativeV2 && message.params.threadId !== script.rootThreadId) {
+      write({
+        id,
+        error: {
+          code: -32600,
+          message: "direct app-server input is not allowed for multi-agent v2 sub-agents",
+        },
+      });
+      return;
+    }
+    NodeFS.appendFileSync(
+      `${process.env.T3_CODEX_COLLAB_SCRIPT}.steering`,
+      `${JSON.stringify(message.params)}\n`,
+    );
+    write({ id, result: { turnId: message.params.expectedTurnId } });
+    return;
+  }
   if (method === "turn/interrupt") {
     // Record which thread/turn was interrupted (append-only sidecar file the
     // test reads) so Stop coverage can assert every live child was reached.

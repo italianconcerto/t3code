@@ -120,6 +120,7 @@ function createProviderServiceHarness() {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
     goal: () => Effect.succeed(null),
+    subagent: () => Effect.die("Unused subagent control"),
     compactThread: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),

@@ -2708,6 +2708,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   return {
     provider: PROVIDER,
+    subagent: (input) =>
+      requireSession(input.threadId).pipe(
+        Effect.flatMap((session) =>
+          session.runtime
+            .subagent(input)
+            .pipe(
+              Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "subagent", cause)),
+            ),
+        ),
+      ),
     capabilities: {
       sessionModelSwitch: "in-session",
       promptlessTurnContinuation: true,

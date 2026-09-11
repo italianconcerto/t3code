@@ -23,6 +23,8 @@ import type {
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  ProviderSubagentInput,
+  ProviderSubagentResult,
   MessageId,
   ThreadId,
   ProviderTurnStartResult,
@@ -40,6 +42,9 @@ import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
+  readonly subagent: (
+    input: ProviderSubagentInput,
+  ) => Effect.Effect<ProviderSubagentResult, ProviderServiceError>;
   /**
    * Start a provider session.
    */

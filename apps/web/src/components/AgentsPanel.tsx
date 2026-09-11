@@ -23,13 +23,16 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
+import { NativeAgentDetail } from "./NativeAgentDetail";
+
+const OpenAgentContext = createContext<((id: string) => void) | null>(null);
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -138,8 +141,9 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
+/** Stable-height roster row; details open inside the same panel. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+  const openAgent = useContext(OpenAgentContext);
   const visuals = STATUS_VISUALS[agent.status];
   const statusLabel =
     agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
@@ -157,7 +161,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <button
+      type="button"
+      onClick={() => openAgent?.(agent.id)}
+      aria-label={`Open subagent ${agent.title}`}
+      className="grid w-full text-left hover:bg-accent/40 h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1"
+    >
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -189,7 +198,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{statusLabel}</span>
-    </div>
+    </button>
   );
 }
 
@@ -552,6 +561,21 @@ function NativeAgentsPanel({
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
 }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = [
+    ...model.directAgents,
+    ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
+  ].find((agent) => agent.id === selectedId);
+  if (selected)
+    return (
+      <NativeAgentDetail
+        key={`${environmentId}:${threadId}:${selected.id}`}
+        agent={selected}
+        environmentId={environmentId}
+        threadId={threadId}
+        onBack={() => setSelectedId(null)}
+      />
+    );
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -566,41 +590,43 @@ function NativeAgentsPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 p-2">
-          {model.workflows.map((group) => (
-            <WorkflowSection
-              key={group.workflow.id}
-              group={group}
-              environmentId={environmentId}
-              threadId={threadId}
-            />
-          ))}
-          {model.directAgents.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Direct spawns
-              </div>
-              {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
-              ))}
-            </section>
-          ) : null}
-        </div>
-      </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-          {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
-    </div>
+    <OpenAgentContext.Provider value={setSelectedId}>
+      <div className="flex h-full min-h-0 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-2 p-2">
+            {model.workflows.map((group) => (
+              <WorkflowSection
+                key={group.workflow.id}
+                group={group}
+                environmentId={environmentId}
+                threadId={threadId}
+              />
+            ))}
+            {model.directAgents.length > 0 ? (
+              <section>
+                <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+                  Direct spawns
+                </div>
+                {model.directAgents.map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} />
+                ))}
+              </section>
+            ) : null}
+          </div>
+        </ScrollArea>
+        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+          <span className="flex items-center gap-2">
+            {model.runningCount + model.waitingCount > 0 ? (
+              <span className="text-info-foreground">
+                ● {model.runningCount + model.waitingCount} working
+              </span>
+            ) : null}
+            {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
+            {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
+          </span>
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        </footer>
+      </div>
+    </OpenAgentContext.Provider>
   );
 }

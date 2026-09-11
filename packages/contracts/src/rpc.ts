@@ -97,6 +97,9 @@ import {
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  ProviderSubagentInput,
+  ProviderSubagentResult,
+  ProviderSubagentError,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -259,6 +262,7 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerSubagent: "provider.subagent",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerAuthComplete: "provider.auth.complete",
@@ -861,6 +865,11 @@ const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, 
   success: ProviderUploadFeedbackResult,
   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
 });
+const WsProviderSubagentRpc = Rpc.make(WS_METHODS.providerSubagent, {
+  payload: ProviderSubagentInput,
+  success: ProviderSubagentResult,
+  error: Schema.Union([ProviderSubagentError, EnvironmentAuthorizationError]),
+});
 
 const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
@@ -1255,6 +1264,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderSubagentRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

@@ -29,6 +29,16 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 const ROOT = wireFixture.rootThreadId;
 const [CHILD_A, CHILD_B] = wireFixture.childThreadIds as [string, string];
 const MEMORY = "memory-consolidation-thread";
+const encodeSubagentScript = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeSteeringRequest = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      threadId: Schema.String,
+      expectedTurnId: Schema.String,
+      input: Schema.Array(Schema.Struct({ text: Schema.String })),
+    }),
+  ),
+);
 const decodeMcpElicitationResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -166,6 +176,98 @@ const peerPath = NodePath.join(
 );
 
 describe("CodexSessionRuntime collab integration", () => {
+  for (const nativeV2 of [false, true]) {
+    it.effect(
+      `reads child steps and steers only the selected live descendant (v2=${nativeV2})`,
+      () =>
+        Effect.gen(function* () {
+          const canonicalId = ThreadId.make("subagent-control-parent");
+          const childTurn = {
+            ...wireFixture.responses.turnStart.turn,
+            id: "steering-child-turn",
+            items: [{ type: "agentMessage", id: "child-message", text: "Probe output" }],
+          };
+          const childThread = {
+            ...capturedSpawnedThread(CHILD_A).params.thread,
+            turns: [childTurn],
+          };
+          const script = {
+            rootThreadId: ROOT,
+            holdTurnOpen: true,
+            nativeV2,
+            childReadSnapshots: {
+              [CHILD_A]: childThread,
+              [CHILD_B]: { ...capturedSpawnedThread(CHILD_B).params.thread, turns: [] },
+              foreign: { ...childThread, id: "foreign", parentThreadId: null, source: "cli" },
+            },
+            notifications: [
+              capturedSpawnedThread(CHILD_A),
+              { method: "turn/started", params: { threadId: CHILD_A, turn: childTurn } },
+            ],
+          };
+          NodeFS.writeFileSync(scriptPath, yield* encodeSubagentScript(script));
+          const steeringPath = `${scriptPath}.steering`;
+          NodeFS.rmSync(steeringPath, { force: true });
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              NodeFS.rmSync(scriptPath, { force: true });
+              NodeFS.rmSync(steeringPath, { force: true });
+            }),
+          );
+          const runtime = yield* makeCodexSessionRuntime({
+            threadId: canonicalId,
+            binaryPath: peerPath,
+            cwd: NodeOS.tmpdir(),
+            runtimeMode: "full-access",
+            environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+          });
+          const started = yield* runtime.events.pipe(
+            Stream.filter((event) => event.method === "collabAgent/turnStarted"),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+          yield* runtime.start();
+          yield* runtime.sendTurn({ input: "start probe" });
+          yield* Fiber.join(started);
+          const detail = yield* runtime.subagent({
+            threadId: canonicalId,
+            agentId: CHILD_A,
+            action: "read",
+          });
+          assert.isTrue(detail.canSteer);
+          assert.include(detail.steps[0]!.text, "Probe output");
+          const delivery = yield* runtime.subagent({
+            threadId: canonicalId,
+            agentId: CHILD_A,
+            action: "steer",
+            message: "Change direction",
+          });
+          const sent = yield* decodeSteeringRequest(NodeFS.readFileSync(steeringPath, "utf8"));
+          assert.equal(delivery.steeringDelivery, nativeV2 ? "parent-relay" : "direct");
+          assert.equal(sent.threadId, nativeV2 ? ROOT : CHILD_A);
+          assert.equal(
+            sent.expectedTurnId,
+            nativeV2 ? wireFixture.responses.turnStart.turn.id : "steering-child-turn",
+          );
+          assert.include(sent.input[0]!.text, "Change direction");
+          if (nativeV2) assert.include(sent.input[0]!.text, CHILD_A);
+          for (const agentId of [ROOT, "foreign", CHILD_B]) {
+            const rejected = yield* runtime
+              .subagent({
+                threadId: canonicalId,
+                agentId,
+                action: "steer",
+                message: "Must not send",
+              })
+              .pipe(Effect.result);
+            assert.equal(rejected._tag, "Failure");
+          }
+          assert.equal(NodeFS.readFileSync(steeringPath, "utf8").trim().split("\n").length, 1);
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  }
+
   it.effect("looks up child model metadata once after activity registration", () =>
     Effect.gen(function* () {
       const script = {

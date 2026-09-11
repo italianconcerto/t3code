@@ -501,6 +501,7 @@ describe("ProviderCommandReactor", () => {
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       compactThread,
       goal,
+      subagent: unsupported,
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],

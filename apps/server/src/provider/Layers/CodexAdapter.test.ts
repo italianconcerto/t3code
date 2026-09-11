@@ -85,6 +85,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   );
 
   public readonly goal: CodexSessionRuntimeShape["goal"] = vi.fn(() => Effect.succeed(null));
+  public readonly subagent: CodexSessionRuntimeShape["subagent"] = vi.fn(() =>
+    Effect.die("Unused subagent control"),
+  );
 
   public readonly compactThread = Effect.void;
 
