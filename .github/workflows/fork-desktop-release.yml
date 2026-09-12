@@ -93,6 +93,12 @@ jobs:
           name: fork-resource-monitor-linux-x64
           path: apps/server/dist/resource-monitor/linux-x64
 
+      - name: Verify packaged Claude subagent reader
+        shell: bash
+        run: |
+          T3_TEST_SUBAGENT_READER_URL="file://$PWD/apps/server/dist/claude-subagent-reader.mjs" \
+            vp test run apps/server/src/provider/claudeSubagentTranscript.test.ts --maxWorkers=1
+
       - name: Pack server release
         shell: bash
         run: |

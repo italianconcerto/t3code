@@ -68,8 +68,8 @@ it("reads all Claude pages in the selected subscription without dropping tool re
         [
           "--input-type=module",
           "-e",
-          CLAUDE_SUBAGENT_READER,
-          import.meta.resolve("@anthropic-ai/claude-agent-sdk"),
+          "await import(process.argv[1])",
+          process.env.T3_TEST_SUBAGENT_READER_URL ?? CLAUDE_SUBAGENT_READER,
           session,
           agent,
           cwd,

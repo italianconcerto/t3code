@@ -246,7 +246,11 @@ const packCmd = Command.make(
       const outputDir = path.resolve(repoRoot, config.outDir);
       const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
 
-      for (const relPath of ["dist/bin.mjs", "dist/service-launcher.mjs"]) {
+      for (const relPath of [
+        "dist/bin.mjs",
+        "dist/service-launcher.mjs",
+        "dist/claude-subagent-reader.mjs",
+      ]) {
         const abs = path.join(serverDir, relPath);
         if (!(yield* fs.exists(abs))) {
           return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });
@@ -344,6 +348,7 @@ const publishCmd = Command.make(
       for (const relPath of [
         "dist/bin.mjs",
         "dist/service-launcher.mjs",
+        "dist/claude-subagent-reader.mjs",
         "dist/client/index.html",
       ]) {
         const abs = path.join(serverDir, relPath);
