@@ -61,7 +61,9 @@ supports async questions.
 ## Inspect and steer native subagents
 
 On web and desktop, open **Agents** and select a native Codex subagent to inspect
-its recent steps. **Load steps** refreshes the details retained by Codex.
+its retained messages and tool activity. History loads in pages, including long
+tool output, and the latest page refreshes while the agent runs. Reading history
+after a server restart does not restart the parent or child.
 
 You can send steering while the subagent is running. Some Codex versions require
 the parent agent to relay the message; keep the parent running in that case.

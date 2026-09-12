@@ -26,13 +26,15 @@ export function NativeAgentDetail({
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const mounted = useRef(true);
+  const pageOffset = useRef(0);
+  const refreshPending = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
-  const run = async (action: "read" | "steer") => {
+  const run = async (action: "read" | "steer", offset = pageOffset.current) => {
     if (!environmentId || !threadId || pending.current) return;
     pending.current = true;
     setBusy(true);
@@ -43,15 +45,21 @@ export function NativeAgentDetail({
         environmentId,
         input:
           action === "read"
-            ? { threadId, agentId: agent.id, action }
+            ? { threadId, agentId: agent.id, action, offset }
             : { threadId, agentId: agent.id, action, message: sent },
       });
       if (!mounted.current) return;
       if (result._tag === "Failure") {
         const cause = squashAtomCommandFailure(result);
         setError(cause instanceof Error ? cause.message : "Could not contact the subagent.");
-      } else if (action === "read") setDetail(result.value);
-      else {
+      } else if (action === "read") {
+        pageOffset.current = offset;
+        setDetail((previous) => {
+          const steps = new Map(previous?.steps.map((step) => [step.id, step]));
+          for (const step of result.value.steps) steps.set(step.id, step);
+          return { ...result.value, steps: [...steps.values()] };
+        });
+      } else {
         setDraft((current) => (current.trim() === sent ? "" : current));
         setFeedback(
           result.value.steeringDelivery === "parent-relay"
@@ -62,6 +70,10 @@ export function NativeAgentDetail({
     } finally {
       pending.current = false;
       if (mounted.current) setBusy(false);
+      if (mounted.current && refreshPending.current) {
+        refreshPending.current = false;
+        void run("read");
+      }
     }
   };
   const loadOnOpen = useEffectEvent(() => {
@@ -70,6 +82,24 @@ export function NativeAgentDetail({
   useEffect(() => {
     loadOnOpen();
   }, [agent.id, environmentId, threadId]);
+  const refreshLivePage = useEffectEvent(() => {
+    if (detail?.nextOffset === undefined) void run("read");
+  });
+  const previousStatus = useRef(agent.status);
+  const refreshFinalPage = useEffectEvent(() => {
+    if (pending.current) refreshPending.current = true;
+    else void run("read");
+  });
+  useEffect(() => {
+    if (isActiveSubagentStatus(previousStatus.current) && !isActiveSubagentStatus(agent.status))
+      refreshFinalPage();
+    previousStatus.current = agent.status;
+  }, [agent.status]);
+  useEffect(() => {
+    if (!isActiveSubagentStatus(agent.status)) return;
+    const timer = window.setInterval(() => refreshLivePage(), 3000);
+    return () => window.clearInterval(timer);
+  }, [agent.status]);
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label="Native subagent detail">
       <header className="flex items-center gap-2 border-b p-2">
@@ -111,8 +141,14 @@ export function NativeAgentDetail({
         {detail?.steps.length === 0 && (
           <p className="text-xs text-muted-foreground">No retained steps.</p>
         )}
+        {detail?.notice && <p className="text-xs text-muted-foreground">{detail.notice}</p>}
+        {detail?.nextOffset !== undefined && (
+          <Button disabled={busy} onClick={() => void run("read", detail.nextOffset)}>
+            Load more steps
+          </Button>
+        )}
         <p className="text-xs text-muted-foreground">
-          Recent steps only. Load steps to fetch or refresh provider details.
+          Conversation history. The latest page refreshes while the agent is active.
         </p>
       </div>
       <form

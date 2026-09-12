@@ -2708,16 +2708,46 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   return {
     provider: PROVIDER,
-    subagent: (input) =>
-      requireSession(input.threadId).pipe(
-        Effect.flatMap((session) =>
-          session.runtime
+    subagent: (input, history) =>
+      Effect.gen(function* () {
+        const existing = sessions.get(input.threadId);
+        if (existing && !existing.stopped)
+          return yield* existing.runtime
             .subagent(input)
             .pipe(
               Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "subagent", cause)),
-            ),
-        ),
-      ),
+            );
+        if (input.action !== "read" || !isCodexResumeCursorSchema(history?.resumeCursor)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "subagent",
+            detail: "No active subagent controls or retained parent session are available.",
+          });
+        }
+        const resumeCursor = history.resumeCursor;
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* makeCodexSessionRuntime({
+              threadId: input.threadId,
+              providerInstanceId: boundInstanceId,
+              cwd: history?.cwd ?? process.cwd(),
+              binaryPath: codexConfig.binaryPath,
+              launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+              ...(options?.environment ? { environment: options.environment } : {}),
+              ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+              resumeCursor,
+              runtimeMode: "approval-required",
+              readOnly: true,
+            });
+            yield* runtime.start();
+            return yield* runtime.subagent(input);
+          }),
+        ).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "subagent/read", cause)),
+        );
+      }),
     capabilities: {
       sessionModelSwitch: "in-session",
       promptlessTurnContinuation: true,

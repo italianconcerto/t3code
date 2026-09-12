@@ -2396,12 +2396,27 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         operation: "ProviderService.subagent",
         allowRecovery: false,
       });
+      if (!routed.adapter.subagent && input.action === "read")
+        return {
+          canSteer: false,
+          steps: [],
+          notice:
+            "This provider has not supplied a readable native transcript. Recorded activity remains visible; steering is unavailable.",
+        };
       if (!routed.adapter.subagent)
         return yield* toValidationError(
           "ProviderService.subagent",
           "This provider does not expose native subagent controls. T3-managed agent chats remain available.",
         );
-      return yield* routed.adapter.subagent({ ...input, threadId: routed.threadId });
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      const cwd = binding ? readPersistedCwd(binding.runtimePayload) : undefined;
+      return yield* routed.adapter.subagent(
+        { ...input, threadId: routed.threadId },
+        {
+          resumeCursor: binding?.resumeCursor,
+          ...(cwd ? { cwd } : {}),
+        },
+      );
     }),
     sendTurn,
     compactThread,

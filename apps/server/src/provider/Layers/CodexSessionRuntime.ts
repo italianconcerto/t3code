@@ -1,4 +1,5 @@
 import type { GoalCommand, ThreadGoal } from "../goal.ts";
+import { subagentTranscriptPage } from "../subagentTranscriptPage.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -158,6 +159,8 @@ type CodexThreadItem =
   | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
 
 export interface CodexSessionRuntimeOptions {
+  /** Initialize a scoped transcript reader without resuming or starting any thread. */
+  readonly readOnly?: boolean;
   readonly threadId: ThreadId;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
@@ -2302,6 +2305,7 @@ export const makeCodexSessionRuntime = (
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
       yield* client.notify("initialized", undefined);
+      if (options.readOnly) return yield* Ref.get(sessionRef);
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
@@ -2449,23 +2453,19 @@ export const makeCodexSessionRuntime = (
               );
             return { canSteer: true, steps: [], steeringDelivery };
           }
-          let remaining = 100_000;
-          const items = response.thread.turns
-            .slice(-20)
+          const allItems = response.thread.turns
             .flatMap((turn) => turn.items)
-            .slice(-100)
-            .toReversed();
+            .filter((item) => item.type !== "reasoning");
+          const offset = input.offset ?? 0;
           const steps = [];
-          for (const item of items) {
-            if (remaining <= 0) break;
+          for (const item of allItems) {
             const serialized = yield* encodeSubagentJson(item).pipe(Effect.orDie);
-            const limit = Math.min(remaining, 10_000);
-            const text =
-              serialized.length > limit ? `${serialized.slice(0, limit)}\n[truncated]` : serialized;
-            remaining -= text.length;
-            steps.push({ id: item.id, type: item.type, text });
+            steps.push({ id: item.id, type: item.type, text: serialized });
           }
-          return { canSteer: activeTurnId !== undefined, steps: steps.toReversed() };
+          return {
+            canSteer: activeTurnId !== undefined,
+            ...subagentTranscriptPage(steps, offset),
+          };
         }).pipe(
           Effect.timeoutOption("10 seconds"),
           Effect.flatMap((result) =>

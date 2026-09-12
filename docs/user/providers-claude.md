@@ -92,6 +92,14 @@ Verify requests in OpenRouter's activity dashboard. For model-role overrides and
 current compatibility requirements, use the
 [OpenRouter Claude Code guide](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration).
 
+## Native subagent history
+
+On web and desktop, open **Agents** and select a Claude subagent to read its
+retained messages and tool results. History comes from the selected subscription's
+local transcript, loads in pages, and remains readable after a server restart.
+Reading history does not require steering support or resume the agent. Claude
+native subagents currently do not support direct steering from this panel.
+
 ## Other routers
 
 A local router uses an ordinary Claude provider instance. Give it a separate

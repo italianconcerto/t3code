@@ -21,6 +21,8 @@ import {
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
+import { readClaudeSubagentTranscript } from "../claudeSubagentTranscript.ts";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { type ClaudeScopedLimitNames, claudeRateLimitEventToUpdate } from "./claudeUsageLimits.ts";
 import {
@@ -1924,6 +1926,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     options?.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
   ).pipe(Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)));
   const fileSystem = yield* FileSystem.FileSystem;
+  const subagentSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
@@ -5137,6 +5140,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       sessionModelSwitch: "in-session",
     },
     compaction: { type: "slash-command", command: "/compact" },
+    subagent: (input, history) =>
+      Effect.gen(function* () {
+        const context = sessions.get(input.threadId);
+        const sessionId =
+          context?.resumeSessionId ?? readClaudeResumeState(history?.resumeCursor)?.resume;
+        if (input.action !== "read")
+          return yield* toRequestError(
+            input.threadId,
+            "subagent/steer",
+            new Error("Claude native subagent steering is not supported."),
+          );
+        if (!sessionId)
+          return yield* toRequestError(
+            input.threadId,
+            "subagent/read",
+            new Error("The parent session has no retained transcript yet."),
+          );
+        return yield* readClaudeSubagentTranscript({
+          sessionId,
+          agentId: input.agentId,
+          cwd: context?.session.cwd ?? history?.cwd ?? ".",
+          offset: input.offset ?? 0,
+          environment: claudeEnvironment,
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, subagentSpawner),
+          Effect.mapError((cause) => toRequestError(input.threadId, "subagent/read", cause)),
+        );
+      }),
     startSession,
     sendTurn,
     interruptTurn,

@@ -71,6 +71,7 @@ export interface ProviderThreadSnapshot {
 export interface ProviderAdapterShape<TError> {
   readonly subagent?: (
     input: ProviderSubagentInput,
+    history?: { readonly resumeCursor: unknown; readonly cwd?: string },
   ) => Effect.Effect<ProviderSubagentResult, TError>;
   /**
    * Provider kind implemented by this adapter.
