@@ -6,6 +6,8 @@ import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRu
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "./ui/button";
+import ChatMarkdown from "./ChatMarkdown";
+import { NativeAgentConversation } from "./NativeAgentConversation";
 
 export function NativeAgentDetail({
   agent,
@@ -116,81 +118,80 @@ export function NativeAgentDetail({
           disabled={busy || !environmentId || !threadId}
           onClick={() => void run("read")}
         >
-          {busy ? "Loading…" : "Load steps"}
+          {busy ? "Loading…" : "Refresh"}
         </Button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto space-y-3 p-3">
-        {agent.recentActivity.map((step, index) => (
-          <details key={`${step.at}:${index}`}>
-            <summary className="cursor-pointer text-xs">{step.summary.slice(0, 120)}</summary>
-            <pre className="whitespace-pre-wrap break-words text-xs">{step.summary}</pre>
-          </details>
-        ))}
-        {agent.result && (
-          <details open>
-            <summary className="text-sm">Result</summary>
-            <p className="whitespace-pre-wrap break-words text-sm">{agent.result}</p>
-          </details>
+        {!detail?.steps.length &&
+          agent.recentActivity.map((step, index) => (
+            <details key={`${step.at}:${index}`}>
+              <summary className="cursor-pointer text-xs">{step.summary.slice(0, 120)}</summary>
+              <pre className="whitespace-pre-wrap break-words text-xs">{step.summary}</pre>
+            </details>
+          ))}
+        {!detail?.steps.length && agent.result && (
+          <ChatMarkdown
+            text={agent.result}
+            cwd={undefined}
+            environmentId={environmentId ?? undefined}
+          />
         )}
-        {detail?.steps.map((step) => (
-          <details key={step.id}>
-            <summary className="cursor-pointer text-xs">{step.type}</summary>
-            <pre className="whitespace-pre-wrap break-words text-xs">{step.text}</pre>
-          </details>
-        ))}
+        {detail && <NativeAgentConversation steps={detail.steps} environmentId={environmentId} />}
         {detail?.steps.length === 0 && (
-          <p className="text-xs text-muted-foreground">No retained steps.</p>
+          <p className="text-xs text-muted-foreground">No conversation history available.</p>
         )}
         {detail?.notice && <p className="text-xs text-muted-foreground">{detail.notice}</p>}
         {detail?.nextOffset !== undefined && (
           <Button disabled={busy} onClick={() => void run("read", detail.nextOffset)}>
-            Load more steps
+            Load more conversation
           </Button>
         )}
         <p className="text-xs text-muted-foreground">
           Conversation history. The latest page refreshes while the agent is active.
         </p>
       </div>
-      <form
-        className="space-y-2 border-t p-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run("steer");
-        }}
-      >
-        {error && (
-          <p role="alert" className="text-xs text-destructive">
-            {error}
-          </p>
-        )}
-        {feedback && !error && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {feedback}
-          </p>
-        )}
-        <textarea
-          aria-label="Steering for subagent"
-          className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          maxLength={20_000}
-          placeholder="Change direction or add context…"
-        />
-        <Button
-          type="submit"
-          size="sm"
-          disabled={
-            busy || !draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status)
-          }
+      {error && (
+        <p role="alert" className="border-t p-3 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      {detail?.canSteer && isActiveSubagentStatus(agent.status) && (
+        <form
+          className="space-y-2 border-t p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run("steer");
+          }}
         >
-          Send steering
-        </Button>
-        {!detail && (
-          <p className="text-xs text-muted-foreground">
-            Load steps to check whether direct steering is available.
-          </p>
-        )}
-      </form>
+          {feedback && !error && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {feedback}
+            </p>
+          )}
+          <textarea
+            aria-label="Steering for subagent"
+            className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            maxLength={20_000}
+            placeholder="Change direction or add context…"
+          />
+          <Button
+            type="submit"
+            size="sm"
+            disabled={
+              busy || !draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status)
+            }
+          >
+            Send steering
+          </Button>
+          {!detail && (
+            <p className="text-xs text-muted-foreground">
+              Load steps to check whether direct steering is available.
+            </p>
+          )}
+        </form>
+      )}
     </section>
   );
 }

@@ -5,6 +5,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { NativeAgentDetail } from "./NativeAgentDetail";
 const command = vi.hoisted(() => vi.fn());
+vi.mock("./ChatMarkdown", () => ({ default: ({ text }: { text: string }) => <p>{text}</p> }));
 vi.mock("~/state/orchestration", () => ({ orchestrationEnvironment: { subagent: "subagent" } }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => command }));
 vi.mock("./ui/button", () => ({
@@ -74,16 +75,12 @@ it("reads and extends history even when steering is unsupported", async () => {
   });
   const more = renderer!.root
     .findAllByType("button")
-    .find((b) => b.children.includes("Load more steps"))!;
+    .find((b) => b.children.includes("Load more conversation"))!;
   await act(() => more.props.onClick());
-  expect(renderer!.root.findAllByType("pre").map((p) => p.children.join(""))).toEqual([
-    "Question",
-    "Answer",
-  ]);
   expect(
-    renderer!.root.findAllByType("button").find((b) => b.children.includes("Send steering"))!.props
-      .disabled,
-  ).toBe(true);
+    renderer!.root.findAllByType("article").map((p) => p.findByType("p").children.join("")),
+  ).toEqual(["Question", "Answer"]);
+  expect(renderer!.root.findAllByType("textarea")).toHaveLength(0);
   expect(command.mock.calls[1]![0].input.offset).toBe(20);
 });
 it("fetches final output after a pending read when the agent settles", async () => {
@@ -109,5 +106,7 @@ it("fetches final output after a pending read when the agent settles", async () 
   );
   await act(() => resolve({ _tag: "Success", value: { canSteer: true, steps: [] } }));
   expect(command).toHaveBeenCalledTimes(2);
-  expect(renderer!.root.findAllByType("pre")[0]!.children).toContain("Finished");
+  expect(renderer!.root.findAllByType("article")[0]!.findByType("p").children).toContain(
+    "Finished",
+  );
 });
