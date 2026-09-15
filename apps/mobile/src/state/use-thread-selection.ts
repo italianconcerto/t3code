@@ -58,6 +58,7 @@ function threadDetailToShell(
     id: thread.id,
     projectId: thread.projectId,
     ...(thread.parentThreadId !== undefined ? { parentThreadId: thread.parentThreadId } : {}),
+    ...(thread.messageVersion !== undefined ? { messageVersion: thread.messageVersion } : {}),
     title: thread.title,
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,

@@ -230,6 +230,7 @@ function isFreshTimestamp(input: string): boolean {
 }
 
 export interface ThreadFeedProps {
+  readonly renderMessageVersions?: ((messageId: MessageId) => React.ReactNode) | undefined;
   readonly onEditMessage?:
     | ((message: { id: MessageId; text: string; attachments?: ReadonlyArray<unknown> }) => void)
     | undefined;
@@ -1333,6 +1334,7 @@ function renderFeedEntry(
     | "dispatchingMessageId"
     | "onEditPendingMessage"
     | "onEditMessage"
+    | "renderMessageVersions"
   > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -1564,6 +1566,7 @@ function renderFeedEntry(
             })}
           </View>
           <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
+            {props.renderMessageVersions?.(message.id)}
             <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
               {entry.pendingMessage && !entry.acknowledged ? "Pending" : timestampLabel}
             </Text>
@@ -2719,6 +2722,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             dispatchingMessageId: props.dispatchingMessageId,
             onEditPendingMessage: props.onEditPendingMessage,
             onEditMessage: props.onEditMessage,
+            renderMessageVersions: props.renderMessageVersions,
             copiedRowId,
             expandedWorkRows,
             workRowSizing,
@@ -2753,6 +2757,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.dispatchingMessageId,
       props.onEditPendingMessage,
       props.onEditMessage,
+      props.renderMessageVersions,
       copiedRowId,
       disclosureToggleSettling,
       expandedWorkRows,

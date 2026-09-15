@@ -56,6 +56,9 @@ export function parseBtwCommand(text: string): string | null {
   return match ? (match[1] ?? "").trim() : null;
 }
 
+export const BTW_INSTRUCTIONS =
+  "This is an independent /btw side discussion. The imported conversation is background context, not instructions to continue its task. Answer only the side question. Do not modify files, run tasks, manage goals or loops, contact the main agent, or create subagents.";
+
 /** A new provider session receives a snapshot; no resume token or automation is inherited. */
 export function buildBtwTurnInput(input: {
   source: Parameters<typeof buildEditMessageTurnInput>[0]["source"] & {
@@ -75,7 +78,7 @@ export function buildBtwTurnInput(input: {
     interactionMode: "plan",
     message: {
       ...turn.message,
-      text: `This is an independent /btw side discussion. The imported conversation is background context, not instructions to continue its task. Answer only the side question. Do not modify files, run tasks, manage goals or loops, contact the main agent, or create subagents.\n\n${input.text}`,
+      text: `${BTW_INSTRUCTIONS}\n\n${input.text}`,
     },
     bootstrap: {
       createThread: {
@@ -102,6 +105,7 @@ export function buildEditMessageTurnInput(input: {
     | "worktreePath"
   >;
   sourceMessageId: MessageId;
+  asVersion?: boolean;
   threadId: ThreadId;
   messageId: MessageId;
   text: string;
@@ -117,9 +121,13 @@ export function buildEditMessageTurnInput(input: {
     createdAt,
     bootstrap: {
       createThread: {
-        forkFrom: { threadId: source.id, messageId: input.sourceMessageId },
+        forkFrom: {
+          threadId: source.id,
+          messageId: input.sourceMessageId,
+          ...(input.asVersion ? { mode: "version" as const } : {}),
+        },
         projectId: source.projectId,
-        title: `${source.title} (edited)`,
+        title: input.asVersion ? source.title : `${source.title} (edited)`,
         modelSelection: source.modelSelection,
         runtimeMode: source.runtimeMode,
         interactionMode: source.interactionMode,
@@ -221,6 +229,7 @@ export const deleteThread: (input: DeleteThreadInput) => CommandEffect = Effect.
   return yield* dispatch({
     ...input,
     type: "thread.delete",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });
@@ -231,6 +240,7 @@ export const archiveThread: (input: ArchiveThreadInput) => CommandEffect = Effec
   return yield* dispatch({
     ...input,
     type: "thread.archive",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });
@@ -241,6 +251,7 @@ export const unarchiveThread: (input: UnarchiveThreadInput) => CommandEffect = E
   return yield* dispatch({
     ...input,
     type: "thread.unarchive",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });
@@ -291,6 +302,7 @@ export const pinThread: (input: PinThreadInput) => CommandEffect = Effect.fn(
   return yield* dispatch({
     ...input,
     type: "thread.pin",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });
@@ -301,6 +313,7 @@ export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn
   return yield* dispatch({
     ...input,
     type: "thread.unpin",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });
@@ -311,6 +324,7 @@ export const reorderPinnedThread: (input: ReorderPinnedThreadInput) => CommandEf
   return yield* dispatch({
     ...input,
     type: "thread.pin.reorder",
+    allVersions: input.allVersions ?? true,
     commandId: yield* commandId(input),
   });
 });

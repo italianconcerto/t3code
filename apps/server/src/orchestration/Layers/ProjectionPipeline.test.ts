@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -4038,6 +4039,112 @@ engineLayer("Managed child thread linkage", (it) => {
       );
       assert.equal(
         snapshot.threads.some((thread) => thread.projectId === projectId),
+        false,
+      );
+    }),
+  );
+  it.effect("persists message version ancestry and deletes the entire conversation", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const query = yield* ProjectionSnapshotQuery;
+      const createdAt = "2026-09-14T10:00:00.000Z";
+      const projectId = ProjectId.make("versions-project");
+      const root = ThreadId.make("versions-root");
+      const child = ThreadId.make("versions-child");
+      const original = MessageId.make("versions-original");
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("versions-project"),
+        projectId,
+        title: "Versions",
+        workspaceRoot: "/tmp/message-versions",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      const create = (id: ThreadId) => ({
+        type: "thread.create" as const,
+        commandId: CommandId.make(`create-${id}`),
+        threadId: id,
+        projectId,
+        title: "Conversation",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+        runtimeMode: "approval-required" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        historyImport: true as const,
+        createdAt,
+      });
+      yield* engine.dispatch(create(root));
+      yield* engine.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("versions-pin"),
+        threadId: root,
+        orderKey: "a1",
+      });
+      yield* engine.dispatch({
+        type: "thread.history.import",
+        commandId: CommandId.make("versions-history"),
+        threadId: root,
+        messages: [
+          { messageId: original, role: "user", text: "Original", attachments: [], createdAt },
+        ],
+      });
+      const messageVersion = {
+        rootThreadId: root,
+        sourceThreadId: root,
+        sourceMessageId: original,
+        messageId: MessageId.make("versions-edited"),
+        messageIndex: 0,
+      };
+      yield* engine.dispatch({ ...create(child), messageVersion });
+      assert.equal(Option.getOrThrow(yield* query.getThreadShellById(child)).pinOrderKey, "a1");
+      yield* engine.dispatch({
+        type: "thread.pin.reorder",
+        commandId: CommandId.make("versions-reorder"),
+        threadId: child,
+        orderKey: "a2",
+        allVersions: true,
+      });
+      assert.equal(Option.getOrThrow(yield* query.getThreadShellById(root)).pinOrderKey, "a2");
+      assert.deepEqual(
+        Option.getOrThrow(yield* query.getThreadShellById(child)).messageVersion,
+        messageVersion,
+      );
+      assert.deepEqual(
+        Option.getOrThrow(yield* query.getThreadDetailById(child)).messageVersion,
+        messageVersion,
+      );
+      assert.deepEqual(
+        (yield* query.getShellSnapshot()).threads.find((thread) => thread.id === child)
+          ?.messageVersion,
+        messageVersion,
+      );
+      const invalid = yield* engine
+        .dispatch({
+          ...create(ThreadId.make("versions-invalid")),
+          messageVersion: { ...messageVersion, messageIndex: 9 },
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(invalid), true);
+      const temporary = ThreadId.make("versions-temporary");
+      yield* engine.dispatch({ ...create(temporary), messageVersion });
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("versions-cleanup"),
+        threadId: temporary,
+      });
+      assert.equal(Option.isSome(yield* query.getThreadShellById(root)), true);
+      assert.equal(Option.isSome(yield* query.getThreadShellById(child)), true);
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("versions-delete"),
+        threadId: child,
+        allVersions: true,
+      });
+      const snapshot = yield* query.getShellSnapshot();
+      assert.equal(
+        snapshot.threads.some((thread) => thread.id === root || thread.id === child),
         false,
       );
     }),

@@ -195,15 +195,52 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  singleVersion = false,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  readonly singleVersion?: boolean;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  if (
+    !singleVersion &&
+    (command.type === "thread.delete" ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unarchive" ||
+      command.type === "thread.pin" ||
+      command.type === "thread.unpin" ||
+      command.type === "thread.pin.reorder") &&
+    command.allVersions === true
+  ) {
+    const selected = yield* requireThread({ readModel, command, threadId: command.threadId });
+    const root = selected.messageVersion?.rootThreadId ?? selected.id;
+    const versions = readModel.threads.filter(
+      (thread) =>
+        thread.deletedAt === null && (thread.messageVersion?.rootThreadId ?? thread.id) === root,
+    );
+    if (versions.length > 1) {
+      const results = yield* Effect.forEach(
+        versions.filter((thread) =>
+          command.type === "thread.archive"
+            ? thread.archivedAt === null
+            : command.type === "thread.unarchive"
+              ? thread.archivedAt !== null
+              : true,
+        ),
+        (thread) =>
+          decideOrchestrationCommand({
+            readModel,
+            command: { ...command, threadId: thread.id },
+            singleVersion: true,
+          }),
+      );
+      return results.flatMap((result) => (Array.isArray(result) ? result : [result]));
+    }
+  }
   if (
     (command.type === "thread.turn.start" || command.type === "thread.turn.interrupt") &&
     command.managedChild !== undefined
@@ -407,6 +444,52 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
+      if (command.messageVersion) {
+        const version = command.messageVersion;
+        const source = yield* requireThreadNotArchived({
+          readModel,
+          command,
+          threadId: version.sourceThreadId,
+        });
+        const root = yield* requireThreadNotArchived({
+          readModel,
+          command,
+          threadId: version.rootThreadId,
+        });
+        const message = source.messages[version.messageIndex];
+        if (
+          readModel.threads.some(
+            (thread) =>
+              (thread.messageVersion?.rootThreadId ?? thread.id) === root.id &&
+              thread.deletedAt === null &&
+              (thread.session?.status === "running" ||
+                thread.session?.status === "starting" ||
+                thread.latestTurn?.state === "running"),
+          )
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Stop the active generation before editing this conversation.",
+          });
+        }
+        if (
+          source.projectId !== command.projectId ||
+          root.projectId !== command.projectId ||
+          (source.messageVersion?.rootThreadId ?? source.id) !== root.id ||
+          root.messageVersion ||
+          !message ||
+          message.id !== version.sourceMessageId ||
+          message.role !== "user" ||
+          command.threadId === source.id ||
+          command.threadId === root.id ||
+          command.historyImport !== true
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Invalid message version ancestry.",
+          });
+        }
+      }
       let ancestorId = command.parentThreadId;
       const ancestors = new Set([command.threadId]);
       while (ancestorId !== undefined) {
@@ -446,7 +529,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      return {
+      const createdEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -454,11 +537,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
           ...(command.historyImport === true ? { metadata: { historyImport: true } } : {}),
         })),
-        type: "thread.created",
+        type: "thread.created" as const,
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
           ...(command.parentThreadId ? { parentThreadId: command.parentThreadId } : {}),
+          ...(command.messageVersion ? { messageVersion: command.messageVersion } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -469,6 +553,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const versionRoot = command.messageVersion
+        ? readModel.threads.find((thread) => thread.id === command.messageVersion?.rootThreadId)
+        : undefined;
+      if (versionRoot?.pinnedAt) {
+        return [
+          createdEvent,
+          {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.pinned" as const,
+            payload: {
+              threadId: command.threadId,
+              pinnedAt: versionRoot.pinnedAt,
+              updatedAt: command.createdAt,
+              ...(versionRoot.pinOrderKey ? { pinOrderKey: versionRoot.pinOrderKey } : {}),
+            },
+          },
+        ];
+      }
+      return createdEvent;
     }
 
     case "thread.delete": {

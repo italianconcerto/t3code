@@ -168,6 +168,7 @@ describe("environment commands", () => {
       expect(dispatched).toEqual([
         {
           type: "thread.archive",
+          allVersions: true,
           commandId: "archive-command",
           threadId: "thread-1",
         },

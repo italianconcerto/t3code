@@ -1,5 +1,7 @@
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { BtwSheet } from "./BtwSheet";
+import { messageVersionChoices } from "@t3tools/client-runtime/message-versions";
+import { useThreadShells } from "../../state/entities";
 import {
   StackActions,
   useFocusEffect,
@@ -24,7 +26,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Alert, Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, ScrollView, View, Pressable, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
@@ -218,6 +220,20 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const versionThreads = useThreadShells();
+  const versions = useMemo(
+    () =>
+      selectedThread && selectedThreadDetail
+        ? messageVersionChoices(
+            versionThreads.filter(
+              (thread) => thread.environmentId === selectedThread.environmentId,
+            ),
+            selectedThread,
+            selectedThreadDetail.messages,
+          )
+        : null,
+    [selectedThread, selectedThreadDetail, versionThreads],
+  );
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -849,8 +865,49 @@ function ThreadRouteContent(
 
       <View className="flex-1 bg-screen">
         <ThreadDetailScreen
+          renderMessageVersions={(messageId) => {
+            const choices = versions?.get(messageId);
+            if (!choices || choices.length < 2) return null;
+            const index = Math.max(
+              0,
+              choices.findIndex((choice) => choice.selected),
+            );
+            const select = (offset: number) => {
+              const choice = choices[index + offset];
+              if (choice)
+                navigation.navigate("Thread", {
+                  environmentId: selectedThread.environmentId,
+                  threadId: choice.threadId,
+                });
+            };
+            return (
+              <View className="flex-row items-center gap-3 py-2">
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous message version"
+                  className="min-h-11 min-w-11 items-center justify-center"
+                  disabled={index === 0}
+                  onPress={() => select(-1)}
+                >
+                  <Text className="text-blue-500">‹</Text>
+                </Pressable>
+                <Text className="text-adaptive-neutral-600-400">
+                  See versions · {index + 1}/{choices.length}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Next message version"
+                  className="min-h-11 min-w-11 items-center justify-center"
+                  disabled={index === choices.length - 1}
+                  onPress={() => select(1)}
+                >
+                  <Text className="text-blue-500">›</Text>
+                </Pressable>
+              </View>
+            );
+          }}
           onEditMessage={
-            serverConfig?.environment.capabilities.threadMessageFork === true
+            serverConfig?.environment.capabilities.threadMessageVersions === true
               ? async (messageId, text) => {
                   const threadId = ThreadId.make(uuidv4());
                   const result = await startEditedTurn({
@@ -858,6 +915,7 @@ function ThreadRouteContent(
                     input: buildEditMessageTurnInput({
                       source: selectedThreadWithDraftSettings ?? selectedThread,
                       sourceMessageId: messageId,
+                      asVersion: true,
                       threadId,
                       messageId: MessageId.make(uuidv4()),
                       text,
@@ -879,8 +937,8 @@ function ThreadRouteContent(
                   );
                   if (!ready) {
                     Alert.alert(
-                      "Conversation created",
-                      "Still syncing. Open the new conversation from the thread list when it appears.",
+                      "Message version saved",
+                      "Still syncing. Reopen this conversation when the connection returns.",
                     );
                     return;
                   }

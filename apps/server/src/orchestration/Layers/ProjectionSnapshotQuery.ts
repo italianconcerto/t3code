@@ -5,6 +5,7 @@ import {
   CheckpointRef,
   IsoDateTime,
   MessageId,
+  MessageVersion,
   NonNegativeInt,
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
@@ -115,6 +116,7 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    messageVersion: Schema.NullOr(Schema.fromJsonString(MessageVersion)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
   }),
@@ -495,6 +497,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
+          message_version_json AS "messageVersion",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -536,6 +539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
+          message_version_json AS "messageVersion",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -579,6 +583,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
+          message_version_json AS "messageVersion",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -1071,6 +1076,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
+          message_version_json AS "messageVersion",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -2070,6 +2076,7 @@ pending_approval_requests AS (
                 id: row.threadId,
                 projectId: row.projectId,
                 ...(row.parentThreadId ? { parentThreadId: row.parentThreadId } : {}),
+                ...(row.messageVersion ? { messageVersion: row.messageVersion } : {}),
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -2286,6 +2293,7 @@ pending_approval_requests AS (
                   id: row.threadId,
                   projectId: row.projectId,
                   ...(row.parentThreadId ? { parentThreadId: row.parentThreadId } : {}),
+                  ...(row.messageVersion ? { messageVersion: row.messageVersion } : {}),
                   title: row.title,
                   modelSelection: row.modelSelection,
                   runtimeMode: row.runtimeMode,
@@ -2429,6 +2437,7 @@ pending_approval_requests AS (
                       id: row.threadId,
                       projectId: row.projectId,
                       ...(row.parentThreadId ? { parentThreadId: row.parentThreadId } : {}),
+                      ...(row.messageVersion ? { messageVersion: row.messageVersion } : {}),
                       title: row.title,
                       modelSelection: row.modelSelection,
                       runtimeMode: row.runtimeMode,
@@ -2580,6 +2589,7 @@ pending_approval_requests AS (
                 id: row.threadId,
                 projectId: row.projectId,
                 ...(row.parentThreadId ? { parentThreadId: row.parentThreadId } : {}),
+                ...(row.messageVersion ? { messageVersion: row.messageVersion } : {}),
                 title: row.title,
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
@@ -2907,6 +2917,9 @@ pending_approval_requests AS (
           ? { parentThreadId: threadRow.value.parentThreadId }
           : {}),
         title: threadRow.value.title,
+        ...(threadRow.value.messageVersion
+          ? { messageVersion: threadRow.value.messageVersion }
+          : {}),
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
@@ -3193,6 +3206,9 @@ pending_approval_requests AS (
           ? { parentThreadId: threadRow.value.parentThreadId }
           : {}),
         title: threadRow.value.title,
+        ...(threadRow.value.messageVersion
+          ? { messageVersion: threadRow.value.messageVersion }
+          : {}),
         modelSelection: threadRow.value.modelSelection,
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,

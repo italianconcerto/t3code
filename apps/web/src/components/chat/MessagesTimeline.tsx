@@ -95,6 +95,7 @@ import {
   Minimize2Icon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  PencilIcon,
   SearchIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -210,6 +211,7 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   onRevertToTurnCount: (targetTurnCount: number) => void;
   onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
+  renderMessageVersions?: ((messageId: MessageId) => React.ReactNode) | undefined;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
@@ -323,6 +325,7 @@ interface MessagesTimelineProps {
   supportsConversationRollback: boolean;
   onRevertToTurnCount: (targetTurnCount: number) => void;
   onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
+  renderMessageVersions?: ((messageId: MessageId) => React.ReactNode) | undefined;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -382,6 +385,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   supportsConversationRollback,
   onRevertToTurnCount,
   onEditMessage,
+  renderMessageVersions,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   isRevertingCheckpoint,
   onImageExpand,
@@ -752,6 +756,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onEditMessage,
+      renderMessageVersions,
       onUseArtifactTemplate,
       onImageExpand,
       onFileOpen,
@@ -777,6 +782,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onEditMessage,
+      renderMessageVersions,
       onUseArtifactTemplate,
       onImageExpand,
       onFileOpen,
@@ -1581,8 +1587,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
               onChange={(event) => setEditText(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              Starts a new conversation from here. Original chat is kept. Workspace files are not
-              restored.
+              Continues from this message. Previous versions remain available. Workspace files are
+              not restored.
             </p>
             {editError && (
               <p role="alert" className="text-xs text-destructive">
@@ -1632,6 +1638,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           />
         )}
       </div>
+      {ctx.renderMessageVersions?.(row.message.id)}
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip>
@@ -1655,7 +1662,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   setEditing(true);
                 }}
               >
-                Edit and restart
+                <PencilIcon className="size-3.5" />
               </Button>
             )}
             {typeof revertTurnCount === "number" && (

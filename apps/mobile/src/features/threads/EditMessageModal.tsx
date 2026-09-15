@@ -34,7 +34,7 @@ export function EditMessageModal(props: {
         <View className="flex-1 gap-4 bg-adaptive-neutral-50-950 p-6 pt-12">
           <Text className="text-xl text-adaptive-neutral-950-50">Edit and restart</Text>
           <Text className="text-adaptive-neutral-600-400">
-            Starts a new conversation from here. Original chat is kept. Workspace files are not
+            Continues from this message. Previous versions remain available. Workspace files are not
             restored.
           </Text>
           <TextInput

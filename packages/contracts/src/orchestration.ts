@@ -607,10 +607,20 @@ export const ThreadLinkedPullRequest = Schema.Struct({
 });
 export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
+export const MessageVersion = Schema.Struct({
+  rootThreadId: ThreadId,
+  sourceThreadId: ThreadId,
+  sourceMessageId: MessageId,
+  messageId: MessageId,
+  messageIndex: NonNegativeInt,
+});
+export type MessageVersion = typeof MessageVersion.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(ThreadId),
+  messageVersion: Schema.optional(MessageVersion),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -694,6 +704,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(ThreadId),
+  messageVersion: Schema.optional(MessageVersion),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -925,6 +936,7 @@ const ThreadCreateCommand = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(ThreadId),
+  messageVersion: Schema.optional(MessageVersion),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -939,18 +951,21 @@ const ThreadCreateCommand = Schema.Struct({
 
 const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
 });
 
 const ThreadArchiveCommand = Schema.Struct({
   type: Schema.Literal("thread.archive"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
   type: Schema.Literal("thread.unarchive"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
 });
@@ -1002,6 +1017,7 @@ const ThreadUnsnoozeCommand = Schema.Struct({
 
 const ThreadPinCommand = Schema.Struct({
   type: Schema.Literal("thread.pin"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
   // Initial slot in the user-arranged pinned order (see ThreadPinReorderCommand).
@@ -1012,12 +1028,14 @@ const ThreadPinCommand = Schema.Struct({
 
 const ThreadUnpinCommand = Schema.Struct({
   type: Schema.Literal("thread.unpin"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
 });
 
 const ThreadPinReorderCommand = Schema.Struct({
   type: Schema.Literal("thread.pin.reorder"),
+  allVersions: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
   // Fractional index key: pinned threads sort by plain string comparison of
@@ -1074,7 +1092,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
     Schema.Struct({
       threadId: ThreadId,
       messageId: MessageId,
-      mode: Schema.optional(Schema.Literal("side")),
+      mode: Schema.optional(Schema.Literals(["side", "version"])),
     }),
   ),
   projectId: ProjectId,
@@ -1469,6 +1487,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(ThreadId),
+  messageVersion: Schema.optional(MessageVersion),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),

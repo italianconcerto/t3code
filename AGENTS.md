@@ -1,5 +1,9 @@
 # T3 Code
 
+## Maintainer preference: headless execution
+
+Run builds, tests, browser automation, and other verification headlessly by default. Do not open visible browser windows, apps, simulator windows, or live preview streams unless explicitly requested. When a required check cannot run headlessly, explain the limitation and ask before using a visible UI. Background execution is acceptable where supported; do not claim an unperformed native UI check passed.
+
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity) and serves web, desktop, and mobile clients.
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.

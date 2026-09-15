@@ -65,6 +65,22 @@ const bootstrap: ThreadTurnStartBootstrap = {
 };
 
 describe("selectThreadFork", () => {
+  it("derives a message version from the server transcript without modifying its source", () => {
+    const fork = selectThreadFork(source, {
+      createThread: {
+        ...bootstrap.createThread!,
+        forkFrom: { threadId: source.id, messageId: MessageId.make("message-2"), mode: "version" },
+      },
+    });
+    expect(fork.version).toEqual({
+      rootThreadId: source.id,
+      sourceThreadId: source.id,
+      sourceMessageId: MessageId.make("message-2"),
+      messageIndex: 2,
+    });
+    expect(fork.history.map((message) => message.id)).toEqual(["message-0", "message-1"]);
+    expect(source.messages).toHaveLength(4);
+  });
   it("snapshots a side discussion through the last assistant message without changing the source", () => {
     const before = structuredClone(source);
     const fork = selectThreadFork(source, {

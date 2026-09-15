@@ -295,6 +295,10 @@ describe("MessagesTimeline", () => {
         renderer!.root
           .findAllByType("button")
           .find((node) => node.props["aria-label"] === label || node.children.includes(label))!;
+      expect(button("Edit and restart from this message").findAllByType("svg")).toHaveLength(1);
+      expect(button("Edit and restart from this message").children).not.toContain(
+        "Edit and restart",
+      );
       await act(() => button("Edit and restart from this message").props.onClick());
       const editor = () => renderer!.root.findByType("textarea");
       expect(editor().props.value).toBe("Original prompt");

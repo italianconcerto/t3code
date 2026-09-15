@@ -1,5 +1,6 @@
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
+import { messageVersionChoices } from "@t3tools/client-runtime/message-versions";
 import {
   collectProviderUsageLimits,
   hasProviderUsageLimits,
@@ -6395,12 +6396,53 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const messageVersions = useMemo(
+    () =>
+      activeThread
+        ? messageVersionChoices(
+            btwThreadShells.filter((thread) => thread.environmentId === environmentId),
+            activeThread,
+            activeThread.messages,
+          )
+        : null,
+    [activeThread, btwThreadShells, environmentId],
+  );
+  const renderMessageVersions = useCallback(
+    (messageId: MessageId) => {
+      const choices = messageVersions?.get(messageId);
+      if (!choices || choices.length < 2) return null;
+      return (
+        <label className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
+          See versions
+          <select
+            aria-label="Message versions"
+            className="rounded-md border bg-background px-2 py-1"
+            value={choices.find((choice) => choice.selected)?.threadId ?? ""}
+            onChange={(event) => {
+              void navigate({
+                to: "/$environmentId/$threadId",
+                params: { environmentId, threadId: event.target.value },
+              });
+            }}
+          >
+            {choices.map((choice, index) => (
+              <option key={choice.threadId} value={choice.threadId}>
+                {index + 1} / {choices.length}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    },
+    [messageVersions, environmentId, navigate],
+  );
+
   const onEditMessage = useCallback(
     async (messageId: MessageId, text: string) => {
       if (
         !activeThread ||
         !isServerThread ||
-        serverConfig?.environment.capabilities.threadMessageFork !== true
+        serverConfig?.environment.capabilities.threadMessageVersions !== true
       ) {
         throw new Error("Update this conversation's server to edit and restart messages.");
       }
@@ -6416,6 +6458,7 @@ export default function ChatView(props: ChatViewProps) {
             interactionMode: sendContext?.interactionMode ?? activeThread.interactionMode,
           },
           sourceMessageId: messageId,
+          asVersion: true,
           threadId: nextThreadId,
           messageId: newMessageId(),
           text,
@@ -6433,8 +6476,8 @@ export default function ChatView(props: ChatViewProps) {
       if (!ready) {
         toastManager.add({
           type: "info",
-          title: "Conversation created",
-          description: "Still syncing. Open the new conversation from the sidebar when it appears.",
+          title: "Message version saved",
+          description: "Still syncing. Reopen this conversation when the connection returns.",
         });
         return;
       }
@@ -8371,11 +8414,12 @@ export default function ChatView(props: ChatViewProps) {
                 onRevertToTurnCount={onRevertTimelineTurn}
                 onEditMessage={
                   isServerThread &&
-                  serverConfig?.environment.capabilities.threadMessageFork === true
+                  serverConfig?.environment.capabilities.threadMessageVersions === true
                     ? onEditMessage
                     : undefined
                 }
                 onUseArtifactTemplate={useArtifactTemplate}
+                renderMessageVersions={renderMessageVersions}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onFileOpen={openFileAttachment}

@@ -3,6 +3,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { collapseMessageVersions } from "@t3tools/client-runtime/message-versions";
 import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
@@ -147,7 +148,16 @@ function ThreadNavigationSidebarPane(
 ) {
   const insets = useSafeAreaInsets();
   const projects = useProjects();
-  const threads = useThreadShells();
+  const allThreadVersions = useThreadShells();
+  const threads = useMemo(() => {
+    const selected = allThreadVersions.find(
+      (thread) => scopedThreadKey(thread.environmentId, thread.id) === props.selectedThreadKey,
+    );
+    return collapseMessageVersions(
+      allThreadVersions,
+      selected ? { environmentId: selected.environmentId, threadId: selected.id } : null,
+    );
+  }, [allThreadVersions, props.selectedThreadKey]);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInput>(null);

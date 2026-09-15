@@ -72,17 +72,18 @@ navigate to their sources.
 
 ## Edit and restart from a sent message
 
-Choose **Edit and restart** on one of your sent messages, change the text, then
-save. T3 starts a new conversation with the earlier messages and your edited
-request. Later messages stay only in the original conversation. Attachments are
-copied so either conversation can be kept independently.
+Choose the pencil on one of your sent messages, change the text, then save.
+T3 continues from that point within the same conversation. Use **See versions**
+under the message to switch between the original continuation and edited versions.
+Each version keeps its messages and attachments; the conversation occupies one
+entry in the conversation list. Stop any active generation before editing.
 
 This does not restore workspace files or undo work already performed. The new
 agent uses the workspace as it is now, in a fresh provider session. Long histories
 remain visible in the chat; the context sent to the model may be shortened.
 
 Available on web, desktop, and mobile when the connected server supports message
-branching. Assistant messages cannot be edited.
+versions. Assistant messages cannot be edited.
 
 ## Recall a sent prompt
 

@@ -1,9 +1,9 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId, ModelSelection } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, ArrowUpRight, Square } from "lucide-react";
+import { ArrowLeft, ArrowUp, ArrowUpRight, Square } from "lucide-react";
 
 import { useThread, useThreadShell, useThreadShells } from "~/state/entities";
 import { threadEnvironment } from "~/state/threads";
@@ -11,40 +11,11 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { newMessageId } from "~/lib/utils";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { Button } from "./ui/button";
+import { ManagedAgentModelPicker } from "./ManagedAgentModelPicker";
+import { ManagedAgentTimeline } from "./ManagedAgentTimeline";
 
 function agentStatus(thread: EnvironmentThreadShell) {
   return thread.session?.status ?? (thread.latestUserMessageAt ? "pending" : "idle");
-}
-
-function textTail(text: string, limit: number) {
-  let start = Math.max(0, text.length - limit);
-  const first = text.charCodeAt(start);
-  if (first >= 0xdc00 && first <= 0xdfff) start++;
-  return text.slice(start);
-}
-
-export function managedMessageExcerpt(
-  messages: ReadonlyArray<{ id: string; role: string; text: string }>,
-) {
-  let remaining = 20_000;
-  const excerpt = [];
-  for (
-    let index = messages.length - 1;
-    index >= 0 && excerpt.length < 50 && remaining > 0;
-    index--
-  ) {
-    const message = messages[index];
-    if (!message) continue;
-    const text = textTail(message.text, Math.min(remaining, 6000));
-    remaining -= text.length;
-    excerpt.push({
-      id: message.id,
-      role: message.role,
-      text,
-      truncated: text.length < message.text.length,
-    });
-  }
-  return excerpt.toReversed();
 }
 
 export function ManagedAgentChat({
@@ -61,27 +32,61 @@ export function ManagedAgentChat({
   const detail = useThread({ environmentId: child.environmentId, threadId: child.id });
   const send = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interrupt = useAtomCommand(threadEnvironment.interruptTurn, { reportFailure: false });
+  const updateModel = useAtomCommand(threadEnvironment.updateMetadata, { reportFailure: false });
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [changingModel, setChangingModel] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const followLatest = useRef(true);
-  useLayoutEffect(() => {
-    if (!detail) return;
-    const scroll = scrollRef.current;
-    if (scroll && followLatest.current) scroll.scrollTop = scroll.scrollHeight;
-  }, [detail]);
+  const persistedModelKey = JSON.stringify(child.modelSelection);
+  const [pendingModel, setPendingModel] = useState<{
+    baseKey: string;
+    selection: ModelSelection;
+  } | null>(null);
+  const modelSelection =
+    pendingModel?.baseKey === persistedModelKey ? pendingModel.selection : child.modelSelection;
+  if (pendingModel !== null && pendingModel.baseKey !== persistedModelKey) {
+    setPendingModel(null);
+  }
+  const working = child.session?.status === "running" || child.session?.status === "starting";
+  const openFullChat = () =>
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams({ environmentId: child.environmentId, threadId: child.id }),
+    });
   const managedChild = {
     parentThreadId: parent.id,
     parentCreatedAt: parent.createdAt,
     childCreatedAt: child.createdAt,
   };
+  const changeModel = async (selection: ModelSelection) => {
+    if (
+      working ||
+      sending ||
+      changingModel ||
+      pendingModel !== null ||
+      JSON.stringify(selection) === persistedModelKey
+    )
+      return;
+    setChangingModel(true);
+    setPendingModel({ baseKey: persistedModelKey, selection });
+    setError(null);
+    const result = await updateModel({
+      environmentId: child.environmentId,
+      input: { threadId: child.id, modelSelection: selection },
+    });
+    setChangingModel(false);
+    if (result._tag === "Failure") {
+      setPendingModel(null);
+      const cause = squashAtomCommandFailure(result);
+      setError(cause instanceof Error ? cause.message : "Could not change the model.");
+    }
+  };
   const sendInstructions = async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || changingModel) return;
     setSending(true);
     setError(null);
     const result = await send({
@@ -89,6 +94,7 @@ export function ManagedAgentChat({
       input: {
         threadId: child.id,
         managedChild,
+        modelSelection,
         message: { messageId: newMessageId(), role: "user", text, attachments: [] },
         runtimeMode: child.runtimeMode,
         interactionMode: child.interactionMode,
@@ -100,9 +106,7 @@ export function ManagedAgentChat({
       setError(cause instanceof Error ? cause.message : "Could not send instructions.");
     } else {
       setDraft((current) => (current === draft ? "" : current));
-      setFeedback(
-        "Instructions sent. A working agent receives them as steering; an idle agent resumes.",
-      );
+      setFeedback(working ? "Message sent to the working agent." : "Message sent.");
     }
   };
   const stop = async () => {
@@ -124,7 +128,7 @@ export function ManagedAgentChat({
       className="flex h-full min-h-0 flex-col"
       aria-label={sideDiscussion ? "BTW side chat" : "Subagent side chat"}
     >
-      <header className="flex items-center gap-2 border-b p-2">
+      <header className="flex shrink-0 items-center gap-2 border-b p-2 pr-20">
         <Button
           variant="ghost"
           size="icon"
@@ -136,7 +140,7 @@ export function ManagedAgentChat({
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-medium">{child.title}</h3>
           <p className="truncate text-xs text-muted-foreground">
-            {child.modelSelection.instanceId} · {child.modelSelection.model}
+            {modelSelection.instanceId} · {modelSelection.model}
           </p>
           <p className="text-xs" role="status">
             {agentStatus(child)}
@@ -146,77 +150,27 @@ export function ManagedAgentChat({
           variant="ghost"
           size="icon"
           aria-label="Open full agent chat"
-          onClick={() =>
-            void navigate({
-              to: "/$environmentId/$threadId",
-              params: buildThreadRouteParams({
-                environmentId: child.environmentId,
-                threadId: child.id,
-              }),
-            })
-          }
+          onClick={openFullChat}
         >
           <ArrowUpRight className="size-4" />
         </Button>
-        <Button variant="outline" size="sm" disabled={stopping} onClick={() => void stop()}>
-          <Square className="size-3" />
-          {stopping ? "Stopping…" : sideDiscussion ? "Stop BTW" : "Stop agent"}
-        </Button>
       </header>
       <div
-        ref={scrollRef}
-        onScroll={(event) => {
-          const scroll = event.currentTarget;
-          followLatest.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
-        }}
-        className="min-h-0 flex-1 overflow-y-auto p-3"
+        className="relative min-h-0 flex-1 overflow-hidden"
         aria-label="Agent messages and activity"
       >
         {!detail ? (
           <p className="text-sm text-muted-foreground">Loading agent chat…</p>
         ) : (
-          <>
-            <p className="mb-3 text-xs text-muted-foreground">
-              {sideDiscussion
-                ? "Independent discussion. Nothing here is sent to the main agent. Close discards it; /btw reopens it after navigation. Open full chat for approvals or questions."
-                : "Recent messages. Open the full chat for earlier history, approvals, questions and file changes."}
-            </p>
-            {managedMessageExcerpt(
-              sideDiscussion
-                ? detail.messages.filter((message) => !message.id.startsWith(`${child.id}:fork:`))
-                : detail.messages,
-            ).map((message) => (
-              <article key={message.id} className="mb-4">
-                <p className="mb-1 text-xs font-medium text-muted-foreground">
-                  {message.role === "user" ? "Instructions" : "Agent"}
-                </p>
-                {message.truncated && (
-                  <p className="text-xs text-muted-foreground">
-                    Earlier text omitted. Open full chat to read it.
-                  </p>
-                )}
-                <p className="whitespace-pre-wrap break-words text-sm">{message.text}</p>
-              </article>
-            ))}
-            {detail.activities.length > 0 && (
-              <details open>
-                <summary className="mb-2 text-xs font-medium">Recent activity</summary>
-                <ul className="space-y-1">
-                  {detail.activities.slice(-10).map((activity) => (
-                    <li key={activity.id} className="break-words text-xs text-muted-foreground">
-                      {activity.summary.length > 500
-                        ? `…${textTail(activity.summary, 500)}`
-                        : activity.summary}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </>
+          <ManagedAgentTimeline
+            detail={detail}
+            sideDiscussion={sideDiscussion}
+            openFullChat={openFullChat}
+          />
         )}
       </div>
       <form
-        className="space-y-2 border-t p-3"
+        className="shrink-0 space-y-2 border-t p-3"
         onSubmit={(event) => {
           event.preventDefault();
           void sendInstructions();
@@ -228,22 +182,75 @@ export function ManagedAgentChat({
           </p>
         )}
         {feedback && !error && (
-          <p role="status" className="text-xs text-muted-foreground">
+          <p role="status" className="sr-only">
             {feedback}
           </p>
         )}
-        <textarea
-          aria-label={sideDiscussion ? "BTW follow-up" : "Instructions for subagent"}
-          className="min-h-20 w-full resize-y rounded-md border bg-background p-2 text-sm"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={
-            sideDiscussion ? "Ask a follow-up…" : "Change direction, add context, or resume work…"
-          }
-        />
-        <Button type="submit" size="sm" disabled={sending || !draft.trim()}>
-          {sending ? "Sending…" : "Send instructions"}
-        </Button>
+        {sideDiscussion && (
+          <p className="text-xs text-muted-foreground">
+            Independent side chat · not sent to the main agent.
+          </p>
+        )}
+        {(child.hasPendingApprovals || child.hasPendingUserInput) && (
+          <Button type="button" variant="outline" size="sm" onClick={openFullChat}>
+            Respond in full chat
+          </Button>
+        )}
+        <div className="rounded-2xl border bg-background p-2">
+          <textarea
+            aria-label={sideDiscussion ? "BTW follow-up" : "Instructions for subagent"}
+            className="min-h-20 max-h-60 w-full resize-y bg-transparent p-2 text-sm outline-none"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void sendInstructions();
+              }
+            }}
+            placeholder={
+              sideDiscussion ? "Ask a follow-up…" : "Change direction, add context, or resume work…"
+            }
+          />
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <div className="min-w-0">
+              <ManagedAgentModelPicker
+                environmentId={child.environmentId}
+                selection={modelSelection}
+                disabled={sending || working || changingModel || pendingModel !== null}
+                onChange={(selection) => void changeModel(selection)}
+              />
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {working && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={sideDiscussion ? "Stop BTW" : "Stop agent"}
+                  title="Stop generation"
+                  disabled={stopping}
+                  onClick={() => void stop()}
+                >
+                  <Square className="size-4" />
+                </Button>
+              )}
+              <Button
+                type="submit"
+                size="icon"
+                className="rounded-full"
+                aria-label="Send message"
+                title="Send message"
+                disabled={sending || changingModel || !draft.trim()}
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            </div>
+          </div>
+          {working && (
+            <p className="mt-1 text-xs text-muted-foreground">Stop generation to change model.</p>
+          )}
+        </div>
       </form>
     </section>
   );

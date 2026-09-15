@@ -107,6 +107,7 @@ import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
   readonly onEditMessage?: ((messageId: MessageId, text: string) => Promise<void>) | undefined;
+  readonly renderMessageVersions?: ((messageId: MessageId) => React.ReactNode) | undefined;
   readonly selectedThread: OrchestrationThreadShell;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
@@ -868,6 +869,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             dispatchingMessageId={props.dispatchingMessageId}
             onEditPendingMessage={handleEditPendingMessage}
             onEditMessage={props.onEditMessage ? setEditingMessage : undefined}
+            renderMessageVersions={props.renderMessageVersions}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}

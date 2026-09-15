@@ -1,4 +1,5 @@
 import * as Arr from "effect/Array";
+import { collapseMessageVersions } from "@t3tools/client-runtime/message-versions";
 import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useState } from "react";
@@ -29,7 +30,8 @@ export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { layout } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
-  const threads = useThreadShells();
+  const allThreadVersions = useThreadShells();
+  const threads = useMemo(() => collapseMessageVersions(allThreadVersions), [allThreadVersions]);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();

@@ -1132,6 +1132,9 @@ const makeWsRpcLayer = (
                 createdAt: bootstrap.createThread.createdAt,
                 ...(fork ? { historyImport: true as const } : {}),
                 ...(fork?.side && forkFrom ? { parentThreadId: forkFrom.threadId } : {}),
+                ...(fork?.version
+                  ? { messageVersion: { ...fork.version, messageId: command.message.messageId } }
+                  : {}),
               });
               // The successful create is a fence in the engine command queue:
               // every delete for the prior incarnation committed before it.

@@ -92,6 +92,7 @@ export function applyThreadDetailEvent(
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           ...(event.payload.parentThreadId ? { parentThreadId: event.payload.parentThreadId } : {}),
+          ...(event.payload.messageVersion ? { messageVersion: event.payload.messageVersion } : {}),
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,

@@ -34,7 +34,20 @@ export function selectThreadFork(source: OrchestrationThread, bootstrap: ThreadT
   ) {
     throw new Error("Cannot branch from this message. Reload the conversation and try again.");
   }
-  return { history: source.messages.slice(0, index + (side ? 1 : 0)), target, side };
+  return {
+    history: source.messages.slice(0, index + (side ? 1 : 0)),
+    target,
+    side,
+    version:
+      create.forkFrom?.mode === "version"
+        ? {
+            rootThreadId: source.messageVersion?.rootThreadId ?? source.id,
+            sourceThreadId: source.id,
+            sourceMessageId: target.id,
+            messageIndex: index,
+          }
+        : undefined,
+  };
 }
 
 export const copyThreadFork = Effect.fn("copyThreadFork")(function* (
