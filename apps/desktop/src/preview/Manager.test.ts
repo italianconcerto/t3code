@@ -447,6 +447,10 @@ const makeFaviconWebContents = (options?: {
     setAudioMuted: vi.fn(),
     isCurrentlyAudible: () => false,
     reload,
+    copy: vi.fn(),
+    cut: vi.fn(),
+    paste: vi.fn(),
+    pasteAndMatchStyle: vi.fn(),
     reloadIgnoringCache: vi.fn(),
     loadURL,
     on: vi.fn((event: string, listener: (...args: never[]) => void) => {
@@ -638,13 +642,25 @@ describe("PreviewManager", () => {
             alt: false,
           };
           beforeInput({ preventDefault } as never, input as never);
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
-          // Releasing Command must not disable native fallback for the pending paste.
+          expect(contents.paste).toHaveBeenCalledOnce();
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
+          // Key release must not paste twice.
           beforeInput(
             { preventDefault } as never,
             { ...input, type: "keyUp", key: "Meta", meta: false } as never,
           );
-          expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(false);
+          expect(contents.paste).toHaveBeenCalledOnce();
+
+          for (const [key, operation] of [
+            ["c", "copy"],
+            ["x", "cut"],
+          ] as const) {
+            const event = { preventDefault: vi.fn() };
+            beforeInput(event as never, { ...input, key } as never);
+            expect(event.preventDefault).toHaveBeenCalledOnce();
+            expect(contents[operation]).toHaveBeenCalledOnce();
+          }
 
           beforeInput({ preventDefault } as never, { ...input, key: "w" } as never);
           expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
@@ -653,7 +669,8 @@ describe("PreviewManager", () => {
           getFocusedWebContents.mockReturnValue(null);
           beforeInput({ preventDefault } as never, input as never);
           expect(contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true);
-          expect(preventDefault).not.toHaveBeenCalled();
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(contents.paste).toHaveBeenCalledOnce();
         }
       }),
     ),

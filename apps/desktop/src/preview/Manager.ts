@@ -75,6 +75,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import { makePreviewAutomationKeySequence } from "./PreviewKeyboard.ts";
+import { previewClipboardCommand } from "./PreviewClipboard.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 
 export type PreviewNavStatus =
@@ -1874,14 +1875,24 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }).pipe(Effect.ignore),
       );
     };
-    const syncMenuShortcuts = (contents: Electron.WebContents, input: Electron.Input): void => {
+    const syncMenuShortcuts = (
+      contents: Electron.WebContents,
+      event: Electron.Event,
+      input: Electron.Input,
+    ): void => {
       if (input.type !== "keyDown") return;
+      const focused = webContents.getFocusedWebContents() === contents;
+      const clipboardCommand = previewClipboardCommand(input, hostPlatform);
+      if (focused && clipboardCommand && !contents.isDestroyed()) {
+        // Prevent the native menu from applying the same edit twice or to the host.
+        event.preventDefault();
+        contents.setIgnoreMenuShortcuts(true);
+        contents[clipboardCommand]();
+        return;
+      }
       // Native editing roles must remain available after the page handles the key.
       // Background automation must not edit whichever other renderer has focus.
-      contents.setIgnoreMenuShortcuts(
-        !isPreviewEditingShortcut(input, hostPlatform) ||
-          webContents.getFocusedWebContents() !== contents,
-      );
+      contents.setIgnoreMenuShortcuts(!isPreviewEditingShortcut(input, hostPlatform) || !focused);
     };
     // A popup opens with Electron's default handler, so the page inside it could
     // otherwise spawn native windows without limit. Nothing in an OAuth flow
@@ -1889,12 +1900,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const windowCreated = (window: Electron.BrowserWindow): void => {
       window.webContents.setIgnoreMenuShortcuts(true);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      window.webContents.on("before-input-event", (_event, input) => {
-        syncMenuShortcuts(window.webContents, input);
+      window.webContents.on("before-input-event", (event, input) => {
+        syncMenuShortcuts(window.webContents, event, input);
       });
     };
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
-      syncMenuShortcuts(wc, input);
+      syncMenuShortcuts(wc, event, input);
       if (isPreviewRefreshShortcut(input)) {
         event.preventDefault();
         runFork(
