@@ -27,10 +27,10 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
-import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
 import { NativeAgentDetail } from "./NativeAgentDetail";
+import { AgentConversationRow } from "./AgentConversationRow";
 
 const OpenAgentContext = createContext<((id: string) => void) | null>(null);
 
@@ -537,7 +537,30 @@ export function AgentsPanel(props: {
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
 }) {
-  const nativePanel = <NativeAgentsPanel {...props} />;
+  return <AgentConversations key={`${props.environmentId}:${props.threadId}`} {...props} />;
+}
+
+function AgentConversations(props: {
+  model: AgentPanelModel;
+  environmentId?: EnvironmentId | null;
+  threadId?: ThreadId | null;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = [
+    ...props.model.directAgents,
+    ...props.model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
+  ].find((agent) => agent.id === selectedId);
+  if (selected)
+    return (
+      <NativeAgentDetail
+        key={selected.id}
+        agent={selected}
+        environmentId={props.environmentId ?? null}
+        threadId={props.threadId ?? null}
+        onBack={() => setSelectedId(null)}
+      />
+    );
+  const nativePanel = <NativeAgentsPanel {...props} onSelect={setSelectedId} />;
   return props.environmentId && props.threadId ? (
     <ManagedAgentsPanel
       key={`${props.environmentId}:${props.threadId}`}
@@ -556,26 +579,13 @@ function NativeAgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  onSelect,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  onSelect: (id: string) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = [
-    ...model.directAgents,
-    ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
-  ].find((agent) => agent.id === selectedId);
-  if (selected)
-    return (
-      <NativeAgentDetail
-        key={`${environmentId}:${threadId}:${selected.id}`}
-        agent={selected}
-        environmentId={environmentId}
-        threadId={threadId}
-        onBack={() => setSelectedId(null)}
-      />
-    );
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -590,10 +600,10 @@ function NativeAgentsPanel({
   }
 
   return (
-    <OpenAgentContext.Provider value={setSelectedId}>
-      <div className="flex h-full min-h-0 flex-col">
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-2 p-2">
+    <OpenAgentContext.Provider value={onSelect}>
+      <div className="flex min-h-0 flex-col">
+        <div>
+          <div className="flex flex-col gap-2 px-3">
             {model.workflows.map((group) => (
               <WorkflowSection
                 key={group.workflow.id}
@@ -604,28 +614,19 @@ function NativeAgentsPanel({
             ))}
             {model.directAgents.length > 0 ? (
               <section>
-                <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                  Direct spawns
-                </div>
                 {model.directAgents.map((agent) => (
-                  <AgentRow key={agent.id} agent={agent} />
+                  <AgentConversationRow
+                    key={agent.id}
+                    title={agent.title}
+                    subtitle={formatSubagentModelLabel(agent.model, agent.effort) ?? ""}
+                    status={agent.status}
+                    onOpen={() => onSelect(agent.id)}
+                  />
                 ))}
               </section>
             ) : null}
           </div>
-        </ScrollArea>
-        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-          <span className="flex items-center gap-2">
-            {model.runningCount + model.waitingCount > 0 ? (
-              <span className="text-info-foreground">
-                ● {model.runningCount + model.waitingCount} working
-              </span>
-            ) : null}
-            {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-            {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-          </span>
-          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-        </footer>
+        </div>
       </div>
     </OpenAgentContext.Provider>
   );

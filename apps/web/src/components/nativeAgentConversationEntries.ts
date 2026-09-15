@@ -45,6 +45,14 @@ export function nativeAgentConversation(
     if (text.trim()) entries.push({ id, kind: "message", role, text });
   };
   for (const [id, message] of messages) {
+    if (!message.parts.has(0)) {
+      entries.push({
+        id,
+        kind: "notice",
+        text: "Load earlier messages to see the start of this message.",
+      });
+      continue;
+    }
     const raw = [...message.parts]
       .sort(([a], [b]) => a - b)
       .map(([, text]) => text)

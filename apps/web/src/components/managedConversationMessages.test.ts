@@ -38,3 +38,15 @@ it("keeps ordinary subagent messages and paginated side replies unchanged", () =
     messages,
   );
 });
+
+it("hides the generated BTW envelope when opened through the agents list", () => {
+  const messages = [
+    message("side:fork:000000", "Main context"),
+    message("question", `${BTW_INSTRUCTIONS}\n\nche mi dici di openrouter?`),
+    message("reply", "A normal answer", "assistant"),
+  ];
+  expect(
+    managedConversationMessages({ id: ThreadId.make("side"), messages }, false).map((m) => m.text),
+  ).toEqual(["che mi dici di openrouter?", "A normal answer"]);
+  expect(messages[1]!.text).toBe(`${BTW_INSTRUCTIONS}\n\nche mi dici di openrouter?`);
+});

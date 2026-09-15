@@ -2464,7 +2464,7 @@ export const makeCodexSessionRuntime = (
           }
           return {
             canSteer: activeTurnId !== undefined,
-            ...subagentTranscriptPage(steps, offset),
+            ...subagentTranscriptPage(steps, offset, input.tail),
           };
         }).pipe(
           Effect.timeoutOption("10 seconds"),

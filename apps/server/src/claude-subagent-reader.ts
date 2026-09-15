@@ -3,7 +3,7 @@ import { subagentTranscriptPage } from "./provider/subagentTranscriptPage.ts";
 
 // Dedicated process: SDK transcript discovery reads subscription environment
 // at module load. This entry is bundled separately for installed clients.
-const [sessionId, agentId, dir, rawOffset] = process.argv.slice(2);
+const [sessionId, agentId, dir, rawOffset, tail] = process.argv.slice(2);
 if (!sessionId || !agentId || !dir) throw new Error("Missing transcript identity.");
 const offset = Number(rawOffset);
 if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid transcript offset.");
@@ -28,7 +28,7 @@ const steps = messages.map((entry) => {
 process.stdout.write(
   JSON.stringify({
     canSteer: false,
-    ...subagentTranscriptPage(steps, offset),
+    ...subagentTranscriptPage(steps, offset, tail === "true"),
     notice: "Conversation is readable. This provider does not support direct steering.",
   }) + "\n",
 );

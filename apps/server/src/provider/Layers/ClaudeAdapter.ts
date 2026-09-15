@@ -5162,6 +5162,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           agentId: input.agentId,
           cwd: context?.session.cwd ?? history?.cwd ?? ".",
           offset: input.offset ?? 0,
+          tail: input.tail ?? false,
           environment: claudeEnvironment,
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, subagentSpawner),

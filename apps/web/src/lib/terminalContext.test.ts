@@ -1,5 +1,15 @@
 import { ThreadId } from "@t3tools/contracts";
+import { BTW_INSTRUCTIONS } from "@t3tools/client-runtime/operations";
 import { describe, expect, it } from "vite-plus/test";
+
+it("hides BTW setup in the full chat without changing stored or copied instructions", () => {
+  const prompt = `${BTW_INSTRUCTIONS}\n\nche mi dici di openrouter?`;
+  expect(deriveDisplayedUserMessageState(prompt).visibleText).toBe("che mi dici di openrouter?");
+  expect(deriveDisplayedUserMessageState(prompt).copyText).toBe(prompt);
+  expect(deriveDisplayedUserMessageState("Discuss: " + prompt).visibleText).toBe(
+    "Discuss: " + prompt,
+  );
+});
 
 import {
   appendTerminalContextsToPrompt,

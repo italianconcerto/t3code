@@ -15,6 +15,7 @@ export const readClaudeSubagentTranscript = Effect.fn("readClaudeSubagentTranscr
     agentId: string;
     cwd: string;
     offset: number;
+    tail?: boolean;
     environment: Record<string, string | undefined>;
   }) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -30,6 +31,7 @@ export const readClaudeSubagentTranscript = Effect.fn("readClaudeSubagentTranscr
           input.agentId,
           input.cwd,
           String(input.offset),
+          String(input.tail ?? false),
         ],
         { env: input.environment, extendEnv: true },
       ),

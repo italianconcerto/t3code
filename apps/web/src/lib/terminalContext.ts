@@ -1,4 +1,5 @@
 import { type ThreadId } from "@t3tools/contracts";
+import { stripBtwSetup } from "@t3tools/client-runtime/operations";
 
 import { extractTrailingElementContexts, type ParsedElementContextEntry } from "./elementContext";
 
@@ -214,7 +215,7 @@ export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMe
   const extractedElement = extractTrailingElementContexts(prompt);
   const extractedTerminal = extractTrailingTerminalContexts(extractedElement.promptText);
   return {
-    visibleText: extractedTerminal.promptText,
+    visibleText: stripBtwSetup(extractedTerminal.promptText),
     copyText: prompt,
     contextCount: extractedTerminal.contextCount,
     previewTitle: extractedTerminal.previewTitle,

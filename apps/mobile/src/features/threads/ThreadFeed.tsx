@@ -1,4 +1,5 @@
 import * as Haptics from "expo-haptics";
+import { stripBtwSetup } from "@t3tools/client-runtime/operations";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import type {
@@ -1458,7 +1459,9 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
-    const renderedText = renderAssistantCitationsAsText(message.text);
+    const renderedText = renderAssistantCitationsAsText(
+      isUser ? stripBtwSetup(message.text) : message.text,
+    );
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
     const attachments = message.attachments ?? [];

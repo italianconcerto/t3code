@@ -131,6 +131,7 @@ export const ProviderSubagentInput = Schema.Union([
     threadId: ThreadId,
     agentId: TrimmedNonEmptyString,
     action: Schema.Literal("read"),
+    tail: Schema.optionalKey(Schema.Boolean),
     offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   }),
   Schema.Struct({
@@ -144,6 +145,8 @@ export type ProviderSubagentInput = typeof ProviderSubagentInput.Type;
 export const ProviderSubagentResult = Schema.Struct({
   canSteer: Schema.Boolean,
   nextOffset: Schema.optionalKey(Schema.Int),
+  offset: Schema.optionalKey(Schema.Int),
+  previousOffset: Schema.optionalKey(Schema.Int),
   notice: Schema.optionalKey(Schema.String),
   steeringDelivery: Schema.optionalKey(Schema.Literals(["direct", "parent-relay"])),
   steps: Schema.Array(

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { stripBtwSetup } from "@t3tools/client-runtime/operations";
 import { Modal, View, ScrollView, TextInput, Pressable } from "react-native";
 import * as Option from "effect/Option";
 import { MessageId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
@@ -111,7 +112,11 @@ export function BtwSheet({
               .map((message) => (
                 <View key={message.id} className="my-2">
                   <Text className="font-t3-bold">{message.role === "user" ? "You" : "Agent"}</Text>
-                  <Text selectable>{message.text.slice(-6000)}</Text>
+                  <Text selectable>
+                    {(message.role === "user" ? stripBtwSetup(message.text) : message.text).slice(
+                      -6000,
+                    )}
+                  </Text>
                 </View>
               ))
           )}

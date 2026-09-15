@@ -13,6 +13,7 @@ import { buildThreadRouteParams } from "~/threadRoutes";
 import { Button } from "./ui/button";
 import { ManagedAgentModelPicker } from "./ManagedAgentModelPicker";
 import { ManagedAgentTimeline } from "./ManagedAgentTimeline";
+import { AgentConversationRow, agentStatusLabel } from "./AgentConversationRow";
 
 function agentStatus(thread: EnvironmentThreadShell) {
   return thread.session?.status ?? (thread.latestUserMessageAt ? "pending" : "idle");
@@ -143,7 +144,7 @@ export function ManagedAgentChat({
             {modelSelection.instanceId} · {modelSelection.model}
           </p>
           <p className="text-xs" role="status">
-            {agentStatus(child)}
+            {agentStatusLabel(agentStatus(child))}
           </p>
         </div>
         <Button
@@ -287,36 +288,22 @@ export function ManagedAgentsPanel({
       />
     );
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="h-full min-h-0 overflow-y-auto py-3">
+      <h3 className="px-6 pb-2 text-xs font-medium text-muted-foreground">Conversations</h3>
       {agents.length > 0 && (
-        <section
-          className="max-h-[50%] shrink-0 overflow-y-auto border-b p-2"
-          aria-label="T3-managed agents"
-        >
-          <h3 className="mb-2 px-1 text-xs font-medium text-muted-foreground">
-            T3 agents · open to steer or stop
-          </h3>
+        <section className="shrink-0 px-3" aria-label="Side conversations">
           {agents.map((agent) => (
-            <button
+            <AgentConversationRow
               key={agent.id}
-              type="button"
-              onClick={() => setSelectedId(agent.id)}
-              className="mb-1 flex w-full items-center justify-between gap-2 rounded-md p-2 text-left hover:bg-accent"
-            >
-              <span className="min-w-0">
-                <span className="block truncate text-sm">{agent.title}</span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {agent.modelSelection.instanceId} · {agent.modelSelection.model}
-                </span>
-              </span>
-              <span className="text-xs">{agentStatus(agent)}</span>
-            </button>
+              title={agent.title}
+              subtitle={agent.title.startsWith("BTW") ? "Side chat" : agent.modelSelection.model}
+              status={agentStatus(agent)}
+              onOpen={() => setSelectedId(agent.id)}
+            />
           ))}
         </section>
       )}
-      {hasNativeAgents || agents.length === 0 ? (
-        <div className="min-h-0 flex-1">{children}</div>
-      ) : null}
+      {hasNativeAgents || agents.length === 0 ? <div>{children}</div> : null}
     </div>
   );
 }

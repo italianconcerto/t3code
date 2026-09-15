@@ -59,6 +59,12 @@ export function parseBtwCommand(text: string): string | null {
 export const BTW_INSTRUCTIONS =
   "This is an independent /btw side discussion. The imported conversation is background context, not instructions to continue its task. Answer only the side question. Do not modify files, run tasks, manage goals or loops, contact the main agent, or create subagents.";
 
+/** Display-only: stored prompts keep their session-isolation instructions. */
+export function stripBtwSetup(text: string): string {
+  const prefix = `${BTW_INSTRUCTIONS}\n\n`;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
 /** A new provider session receives a snapshot; no resume token or automation is inherited. */
 export function buildBtwTurnInput(input: {
   source: Parameters<typeof buildEditMessageTurnInput>[0]["source"] & {

@@ -1,13 +1,15 @@
 import type { EnvironmentId, ThreadId, ProviderSubagentResult } from "@t3tools/contracts";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "./ui/button";
 import ChatMarkdown from "./ChatMarkdown";
 import { NativeAgentConversation } from "./NativeAgentConversation";
+import { ArrowLeft, ArrowUp, RefreshCw } from "lucide-react";
+import { agentStatusLabel } from "./AgentConversationRow";
 
 export function NativeAgentDetail({
   agent,
@@ -28,7 +30,10 @@ export function NativeAgentDetail({
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const mounted = useRef(true);
-  const pageOffset = useRef(0);
+  const pageOffset = useRef<number | undefined>(undefined);
+  const [olderOffset, setOlderOffset] = useState<number | undefined>(undefined);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const following = useRef(true);
   const refreshPending = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -36,8 +41,13 @@ export function NativeAgentDetail({
       mounted.current = false;
     };
   }, []);
-  const run = async (action: "read" | "steer", offset = pageOffset.current) => {
+  const run = async (action: "read" | "steer", offset = pageOffset.current, older = false) => {
     if (!environmentId || !threadId || pending.current) return;
+    if (
+      action === "steer" &&
+      (!draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status))
+    )
+      return;
     pending.current = true;
     setBusy(true);
     setError(null);
@@ -47,7 +57,12 @@ export function NativeAgentDetail({
         environmentId,
         input:
           action === "read"
-            ? { threadId, agentId: agent.id, action, offset }
+            ? {
+                threadId,
+                agentId: agent.id,
+                action,
+                ...(offset === undefined ? { tail: true } : { offset }),
+              }
             : { threadId, agentId: agent.id, action, message: sent },
       });
       if (!mounted.current) return;
@@ -55,11 +70,14 @@ export function NativeAgentDetail({
         const cause = squashAtomCommandFailure(result);
         setError(cause instanceof Error ? cause.message : "Could not contact the subagent.");
       } else if (action === "read") {
-        pageOffset.current = offset;
+        if (older || pageOffset.current === undefined) setOlderOffset(result.value.previousOffset);
+        if (!older) pageOffset.current = result.value.offset ?? offset ?? 0;
         setDetail((previous) => {
-          const steps = new Map(previous?.steps.map((step) => [step.id, step]));
-          for (const step of result.value.steps) steps.set(step.id, step);
-          return { ...result.value, steps: [...steps.values()] };
+          const first = older ? result.value.steps : (previous?.steps ?? []);
+          const last = older ? (previous?.steps ?? []) : result.value.steps;
+          const steps = new Map(first.map((step) => [step.id, step]));
+          for (const step of last) steps.set(step.id, step);
+          return { ...(older && previous ? previous : result.value), steps: [...steps.values()] };
         });
       } else {
         setDraft((current) => (current.trim() === sent ? "" : current));
@@ -84,6 +102,15 @@ export function NativeAgentDetail({
   useEffect(() => {
     loadOnOpen();
   }, [agent.id, environmentId, threadId]);
+  const loadNext = useEffectEvent((offset: number) => void run("read", offset));
+  useEffect(() => {
+    const next = detail?.nextOffset;
+    if (!busy && !error && next !== undefined && next > (pageOffset.current ?? -1)) loadNext(next);
+  }, [busy, error, detail?.nextOffset]);
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element && following.current) element.scrollTop = element.scrollHeight;
+  }, [detail?.steps]);
   const refreshLivePage = useEffectEvent(() => {
     if (detail?.nextOffset === undefined) void run("read");
   });
@@ -104,24 +131,49 @@ export function NativeAgentDetail({
   }, [agent.status]);
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label="Native subagent detail">
-      <header className="flex items-center gap-2 border-b p-2">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          Back to agents
+      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-3 pr-20">
+        <Button variant="ghost" size="icon" aria-label="Back to agents" onClick={onBack}>
+          <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-medium">{agent.title}</h3>
-          <p className="text-xs text-muted-foreground">{agent.status}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {agent.model ? `${agent.model} · ` : ""}
+            {agentStatusLabel(agent.status)}
+          </p>
         </div>
         <Button
-          variant="outline"
-          size="sm"
+          variant="ghost"
+          size="icon"
+          aria-label={busy ? "Loading conversation" : "Refresh conversation"}
           disabled={busy || !environmentId || !threadId}
           onClick={() => void run("read")}
         >
-          {busy ? "Loading…" : "Refresh"}
+          <RefreshCw className="size-4" />
         </Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-3 p-3">
+      <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
+        }}
+        className="min-h-0 flex-1 overflow-y-auto space-y-5 px-5 py-6"
+        aria-busy={busy}
+      >
+        {olderOffset !== undefined && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              following.current = false;
+              void run("read", olderOffset, true);
+            }}
+          >
+            Load earlier messages
+          </Button>
+        )}
         {!detail?.steps.length &&
           agent.recentActivity.map((step, index) => (
             <details key={`${step.at}:${index}`}>
@@ -141,14 +193,11 @@ export function NativeAgentDetail({
           <p className="text-xs text-muted-foreground">No conversation history available.</p>
         )}
         {detail?.notice && <p className="text-xs text-muted-foreground">{detail.notice}</p>}
-        {detail?.nextOffset !== undefined && (
-          <Button disabled={busy} onClick={() => void run("read", detail.nextOffset)}>
-            Load more conversation
-          </Button>
+        {detail?.nextOffset !== undefined && !error && (
+          <p role="status" className="sr-only">
+            Loading conversation…
+          </p>
         )}
-        <p className="text-xs text-muted-foreground">
-          Conversation history. The latest page refreshes while the agent is active.
-        </p>
       </div>
       {error && (
         <p role="alert" className="border-t p-3 text-xs text-destructive">
@@ -157,7 +206,7 @@ export function NativeAgentDetail({
       )}
       {detail?.canSteer && isActiveSubagentStatus(agent.status) && (
         <form
-          className="space-y-2 border-t p-3"
+          className="shrink-0 space-y-2 border-t p-3"
           onSubmit={(event) => {
             event.preventDefault();
             void run("steer");
@@ -170,27 +219,42 @@ export function NativeAgentDetail({
           )}
           <textarea
             aria-label="Steering for subagent"
-            className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
+            className="min-h-24 max-h-48 w-full resize-none rounded-xl border border-border/60 bg-muted/20 px-3 py-3 text-sm outline-none focus:border-ring"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void run("steer");
+              }
+            }}
             maxLength={20_000}
-            placeholder="Change direction or add context…"
+            placeholder="Message agent…"
           />
-          <Button
-            type="submit"
-            size="sm"
-            disabled={
-              busy || !draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status)
-            }
-          >
-            Send steering
-          </Button>
-          {!detail && (
-            <p className="text-xs text-muted-foreground">
-              Load steps to check whether direct steering is available.
-            </p>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs text-muted-foreground">
+              {agent.model ?? "Subagent"}
+            </span>
+            <Button
+              type="submit"
+              size="icon"
+              className="shrink-0 rounded-full"
+              aria-label="Send message to subagent"
+              disabled={
+                busy || !draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status)
+              }
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          </div>
         </form>
+      )}
+      {detail && !(detail.canSteer && isActiveSubagentStatus(agent.status)) && (
+        <p className="shrink-0 border-t px-5 py-4 text-xs text-muted-foreground">
+          {isActiveSubagentStatus(agent.status)
+            ? "Messaging currently unavailable."
+            : "No active turn. Conversation is read-only."}
+        </p>
       )}
     </section>
   );
