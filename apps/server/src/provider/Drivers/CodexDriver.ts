@@ -253,7 +253,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               probeCodexSkillsForCwd({
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                launchArgs: resolveCodexLaunchArgs(
+                  effectiveConfig.launchArgs,
+                  processEnv,
+                  effectiveConfig.autoCompactWindow,
+                ),
                 cwd,
                 environment: processEnv,
               }).pipe(
@@ -289,7 +293,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               const { client } = yield* withCodexAppServerClient({
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                launchArgs: resolveCodexLaunchArgs(
+                  effectiveConfig.launchArgs,
+                  processEnv,
+                  effectiveConfig.autoCompactWindow,
+                ),
                 // Account-level request; any directory serves, same as the status probe.
                 cwd: process.cwd(),
                 environment: processEnv,

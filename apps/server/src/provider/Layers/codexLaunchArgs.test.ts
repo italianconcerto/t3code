@@ -9,6 +9,27 @@ import {
 } from "./codexLaunchArgs.ts";
 
 describe("resolveCodexLaunchArgs", () => {
+  it("passes the instance threshold to app-server and exec after other overrides", () => {
+    const resolved = resolveCodexLaunchArgs(
+      "",
+      {
+        T3CODE_CODEX_LAUNCH_ARGS: "-c model_auto_compact_token_limit=100000",
+      },
+      "200000",
+    );
+    const expected = [
+      "-c",
+      "model_auto_compact_token_limit=100000",
+      "-c",
+      "model_auto_compact_token_limit=200000",
+    ];
+    NodeAssert.deepStrictEqual(codexAppServerArgs(resolved), ["app-server", ...expected]);
+    NodeAssert.deepStrictEqual(codexExecLaunchArgs(resolved), expected);
+  });
+
+  it("does not override the provider configuration when cleared", () => {
+    NodeAssert.equal(resolveCodexLaunchArgs("--strict-config", {}, ""), "--strict-config");
+  });
   it("uses T3CODE_CODEX_LAUNCH_ARGS before configured settings", () => {
     NodeAssert.equal(
       resolveCodexLaunchArgs(" --strict-config ", { T3CODE_CODEX_LAUNCH_ARGS: "--enable foo" }),

@@ -222,6 +222,7 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
               threadId: first.threadId,
               afterSequence: first.sequence,
               timeoutSeconds: 5,
+              untilSettled: false,
             })
             .pipe(Effect.provideService(OrchestrationEngineService, waitEngine), Effect.forkScoped);
           yield* Deferred.await(subscribed);
@@ -241,14 +242,23 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
             threadId: first.threadId,
             sequence: changed.sequence,
             timedOut: false,
+            status: "pending",
+            settled: false,
           });
           // The same durable cursor works after the notification was consumed.
           assert.deepEqual(
             yield* agentsToolkitHandlers.t3_agent_wait({
               threadId: first.threadId,
               afterSequence: first.sequence,
+              untilSettled: false,
             }),
-            { threadId: first.threadId, sequence: changed.sequence, timedOut: false },
+            {
+              threadId: first.threadId,
+              sequence: changed.sequence,
+              timedOut: false,
+              status: "pending",
+              settled: false,
+            },
           );
           const timeoutSubscribed = yield* Deferred.make<void>();
           const timeoutEngine = {
@@ -262,6 +272,7 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
               threadId: first.threadId,
               afterSequence: changed.sequence,
               timeoutSeconds: 1,
+              untilSettled: false,
             })
             .pipe(
               Effect.provideService(OrchestrationEngineService, timeoutEngine),
@@ -273,10 +284,56 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
             threadId: first.threadId,
             sequence: changed.sequence,
             timedOut: true,
+            status: "pending",
+            settled: false,
+          });
+          const settledSubscribed = yield* Deferred.make<void>();
+          const settledEngine = {
+            ...engine,
+            subscribeDomainEvents: engine.subscribeDomainEvents.pipe(
+              Effect.tap(() => Deferred.succeed(settledSubscribed, undefined)),
+            ),
+          };
+          const settling = yield* agentsToolkitHandlers
+            .t3_agent_wait({
+              threadId: first.threadId,
+              afterSequence: changed.sequence,
+              timeoutSeconds: 5,
+            })
+            .pipe(
+              Effect.provideService(OrchestrationEngineService, settledEngine),
+              Effect.forkScoped,
+            );
+          yield* Deferred.await(settledSubscribed);
+          const settled = yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("child-settled"),
+            threadId: first.threadId,
+            session: {
+              threadId: first.threadId,
+              status: "ready",
+              providerName: "Claude",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          });
+          assert.deepEqual(yield* Fiber.join(settling), {
+            threadId: first.threadId,
+            sequence: settled.sequence,
+            timedOut: false,
+            status: "ready",
+            settled: true,
           });
           assert.equal(
             (yield* agentsToolkitHandlers
-              .t3_agent_wait({ threadId: first.threadId, afterSequence: changed.sequence + 1000 })
+              .t3_agent_wait({
+                threadId: first.threadId,
+                afterSequence: changed.sequence + 1000,
+                untilSettled: false,
+              })
               .pipe(Effect.exit))._tag,
             "Failure",
           );
@@ -302,7 +359,7 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
         assert.equal(child.branch, "task-branch");
         assert.equal(child.worktreePath, "/tmp/agent-checkout");
         assert.deepEqual(child.modelSelection, input.modelSelection);
-        assert.equal(child.session, null);
+        assert.equal(child.session?.status, "ready");
         assert.deepEqual(
           child.messages.map((message) => message.text),
           [input.prompt],
@@ -310,7 +367,7 @@ it.layer(registeredLayer)("managed agent tools with real orchestration persisten
         assert.equal((yield* agentsToolkitHandlers.t3_agent_list()).length, 1);
         const observed = yield* agentsToolkitHandlers.t3_agent_get({ threadId: first.threadId });
         assert.equal(observed.threadId, first.threadId);
-        assert.equal(observed.status, "pending");
+        assert.equal(observed.status, "ready");
         assert.deepEqual(observed.messages, [
           { role: "user", text: input.prompt, truncated: false },
         ]);

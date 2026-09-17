@@ -527,6 +527,19 @@ function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fields>(
   );
 }
 
+const CODEX_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{0,8})$/;
+const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
+
+const autoCompactWindowSetting = (pattern: RegExp, range: string) =>
+  TrimmedString.check(Schema.isPattern(pattern)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+    Schema.annotateKey({
+      title: "Auto-compact after",
+      description: `${range} Leave empty to use the provider's configuration or model default. Applies when a provider session starts.`,
+      providerSettingsForm: { placeholder: "Default (tokens)", clearWhenEmpty: "omit" },
+    }),
+  );
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -563,6 +576,10 @@ export const CodexSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    autoCompactWindow: autoCompactWindowSetting(
+      CODEX_AUTO_COMPACT_WINDOW_PATTERN,
+      "Token threshold; the model's context limit still applies.",
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -576,15 +593,10 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "autoCompactWindow", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
-
-// Empty, or an integer from 100,000 to 1,000,000. Shared by the full
-// Claude settings schema and its patch so an out-of-range value fails at
-// the update that introduced it.
-const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
@@ -623,19 +635,9 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    autoCompactWindow: TrimmedString.check(
-      Schema.isPattern(CLAUDE_AUTO_COMPACT_WINDOW_PATTERN),
-    ).pipe(
-      Schema.withDecodingDefault(Effect.succeed("")),
-      Schema.annotateKey({
-        title: "Auto-compact after",
-        description:
-          "Compact after 100,000 to 1,000,000 tokens. Leave empty to use Claude's default.",
-        providerSettingsForm: {
-          placeholder: "e.g. 300000",
-          clearWhenEmpty: "omit",
-        },
-      }),
+    autoCompactWindow: autoCompactWindowSetting(
+      CLAUDE_AUTO_COMPACT_WINDOW_PATTERN,
+      "Token threshold: 100,000 to 1,000,000.",
     ),
   },
   {
@@ -1208,6 +1210,9 @@ const CodexSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
   shadowHomePath: Schema.optionalKey(TrimmedString),
+  autoCompactWindow: Schema.optionalKey(
+    TrimmedString.check(Schema.isPattern(CODEX_AUTO_COMPACT_WINDOW_PATTERN)),
+  ),
   launchArgs: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });

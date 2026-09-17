@@ -261,12 +261,12 @@ export function ManagedAgentsPanel({
   environmentId,
   threadId,
   children,
-  hasNativeAgents,
+  hasNativeAgents = false,
 }: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
-  children: ReactNode;
-  hasNativeAgents: boolean;
+  children?: ReactNode;
+  hasNativeAgents?: boolean;
 }) {
   const shells = useThreadShells();
   const parent = useThreadShell({ environmentId, threadId });
@@ -288,22 +288,24 @@ export function ManagedAgentsPanel({
       />
     );
   return (
-    <div className="h-full min-h-0 overflow-y-auto py-3">
-      <h3 className="px-6 pb-2 text-xs font-medium text-muted-foreground">Conversations</h3>
-      {agents.length > 0 && (
-        <section className="shrink-0 px-3" aria-label="Side conversations">
+    <div className="h-full min-h-0 overflow-y-auto py-3" aria-label="Agents">
+      {agents.length === 0 && !hasNativeAgents ? (
+        <p className="px-6 py-4 text-sm text-muted-foreground">No agents yet.</p>
+      ) : (
+        <div className="flex min-h-0 flex-col gap-1">
           {agents.map((agent) => (
-            <AgentConversationRow
-              key={agent.id}
-              title={agent.title}
-              subtitle={agent.title.startsWith("BTW") ? "Side chat" : agent.modelSelection.model}
-              status={agentStatus(agent)}
-              onOpen={() => setSelectedId(agent.id)}
-            />
+            <div key={agent.id} className="px-3">
+              <AgentConversationRow
+                title={agent.title}
+                subtitle={agent.title.startsWith("BTW") ? "Side chat" : agent.modelSelection.model}
+                status={agentStatus(agent)}
+                onOpen={() => setSelectedId(agent.id)}
+              />
+            </div>
           ))}
-        </section>
+          {hasNativeAgents ? <div>{children}</div> : null}
+        </div>
       )}
-      {hasNativeAgents || agents.length === 0 ? <div>{children}</div> : null}
     </div>
   );
 }

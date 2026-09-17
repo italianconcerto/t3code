@@ -453,36 +453,45 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
-  it.effect("passes configured launch args into the session runtime", () => {
-    const runtimeFactory = makeRuntimeFactory();
-    const layer = Layer.effect(
-      CodexAdapter,
-      Effect.gen(function* () {
-        const codexConfig = decodeCodexSettings({ launchArgs: "--strict-config --enable foo" });
-        return yield* makeCodexAdapter(codexConfig, {
-          makeRuntime: runtimeFactory.factory,
+  it.effect(
+    "passes configured launch args and compaction threshold into the session runtime",
+    () => {
+      const runtimeFactory = makeRuntimeFactory();
+      const layer = Layer.effect(
+        CodexAdapter,
+        Effect.gen(function* () {
+          const codexConfig = decodeCodexSettings({
+            launchArgs: "--strict-config --enable foo",
+            autoCompactWindow: "200000",
+          });
+          return yield* makeCodexAdapter(codexConfig, {
+            makeRuntime: runtimeFactory.factory,
+          });
+        }),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      return Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("sess-launch-args"),
+          runtimeMode: "full-access",
         });
-      }),
-    ).pipe(
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
-      Layer.provideMerge(providerSessionDirectoryTestLayer),
-      Layer.provideMerge(NodeServices.layer),
-    );
 
-    return Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("codex"),
-        threadId: asThreadId("sess-launch-args"),
-        runtimeMode: "full-access",
-      });
-
-      const runtime = runtimeFactory.lastRuntime;
-      NodeAssert.ok(runtime);
-      NodeAssert.equal(runtime.options.launchArgs, "--strict-config --enable foo");
-    }).pipe(Effect.provide(layer));
-  });
+        const runtime = runtimeFactory.lastRuntime;
+        NodeAssert.ok(runtime);
+        NodeAssert.equal(
+          runtime.options.launchArgs,
+          "--strict-config --enable foo -c model_auto_compact_token_limit=200000",
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("uses T3CODE_CODEX_LAUNCH_ARGS for the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();

@@ -8,7 +8,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "./ui/button";
 import ChatMarkdown from "./ChatMarkdown";
 import { NativeAgentConversation } from "./NativeAgentConversation";
-import { ArrowLeft, ArrowUp, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowUp } from "lucide-react";
 import { agentStatusLabel } from "./AgentConversationRow";
 
 export function NativeAgentDetail({
@@ -131,26 +131,17 @@ export function NativeAgentDetail({
   }, [agent.status]);
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label="Native subagent detail">
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-3 pr-20">
+      <header className="flex shrink-0 items-center gap-2 border-b p-2 pr-20">
         <Button variant="ghost" size="icon" aria-label="Back to agents" onClick={onBack}>
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-medium">{agent.title}</h3>
-          <p className="mt-1 truncate text-xs text-muted-foreground">
+          <p className="truncate text-xs text-muted-foreground">
             {agent.model ? `${agent.model} · ` : ""}
             {agentStatusLabel(agent.status)}
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={busy ? "Loading conversation" : "Refresh conversation"}
-          disabled={busy || !environmentId || !threadId}
-          onClick={() => void run("read")}
-        >
-          <RefreshCw className="size-4" />
-        </Button>
       </header>
       <div
         ref={scrollRef}
@@ -217,35 +208,40 @@ export function NativeAgentDetail({
               {feedback}
             </p>
           )}
-          <textarea
-            aria-label="Steering for subagent"
-            className="min-h-24 max-h-48 w-full resize-none rounded-xl border border-border/60 bg-muted/20 px-3 py-3 text-sm outline-none focus:border-ring"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                void run("steer");
-              }
-            }}
-            maxLength={20_000}
-            placeholder="Message agent…"
-          />
-          <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-xs text-muted-foreground">
-              {agent.model ?? "Subagent"}
-            </span>
-            <Button
-              type="submit"
-              size="icon"
-              className="shrink-0 rounded-full"
-              aria-label="Send message to subagent"
-              disabled={
-                busy || !draft.trim() || !detail?.canSteer || !isActiveSubagentStatus(agent.status)
-              }
-            >
-              <ArrowUp className="size-4" />
-            </Button>
+          <div className="rounded-2xl border bg-background p-2">
+            <textarea
+              aria-label="Steering for subagent"
+              className="min-h-20 max-h-60 w-full resize-y bg-transparent p-2 text-sm outline-none"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void run("steer");
+                }
+              }}
+              maxLength={20_000}
+              placeholder="Change direction, add context, or resume work…"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs text-muted-foreground">
+                {agent.model ?? "Agent"}
+              </span>
+              <Button
+                type="submit"
+                size="icon"
+                className="shrink-0 rounded-full"
+                aria-label="Send message to subagent"
+                disabled={
+                  busy ||
+                  !draft.trim() ||
+                  !detail?.canSteer ||
+                  !isActiveSubagentStatus(agent.status)
+                }
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            </div>
           </div>
         </form>
       )}

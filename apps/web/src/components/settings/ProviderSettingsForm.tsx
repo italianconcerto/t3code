@@ -430,6 +430,12 @@ export function ProviderSettingsForm({
           onChange={onChange}
         />
       ))}
+      {variant === "settings" && !fields.some((field) => field.key === "autoCompactWindow") ? (
+        <SettingsRow
+          title="Auto-compact after"
+          description="A custom token threshold is not exposed by this T3 adapter. Compaction follows the provider's configuration."
+        />
+      ) : null}
     </>
   );
 }

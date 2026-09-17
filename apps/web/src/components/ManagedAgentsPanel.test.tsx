@@ -3,9 +3,10 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { ManagedAgentChat } from "./ManagedAgentsPanel";
+import { ManagedAgentChat, ManagedAgentsPanel } from "./ManagedAgentsPanel";
 
 const commands = vi.hoisted(() => ({ send: vi.fn(), stop: vi.fn(), update: vi.fn() }));
+const shells = vi.hoisted(() => ({ current: [] as EnvironmentThreadShell[] }));
 vi.mock("./ManagedAgentTimeline", () => ({ ManagedAgentTimeline: () => <div /> }));
 vi.mock("./ManagedAgentModelPicker", () => ({
   ManagedAgentModelPicker: ({
@@ -30,8 +31,9 @@ vi.mock("~/state/use-atom-command", () => ({
 }));
 vi.mock("~/state/entities", () => ({
   useThread: () => ({ messages: [], activities: [] }),
-  useThreadShell: () => null,
-  useThreadShells: () => [],
+  useThreadShell: ({ threadId }: { threadId: ThreadId }) =>
+    shells.current.find((thread) => thread.id === threadId) ?? null,
+  useThreadShells: () => shells.current,
 }));
 vi.mock("~/lib/utils", () => ({ newMessageId: () => "side-message" }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -87,7 +89,23 @@ afterEach(async () => {
   await act(() => renderer?.unmount());
   renderer = undefined;
   vi.clearAllMocks();
+  shells.current = [];
   vi.unstubAllGlobals();
+});
+
+it("shows only durable T3 child chats in the agent roster", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  shells.current = [parent, child];
+  await act(() => {
+    renderer = create(
+      <ManagedAgentsPanel environmentId={parent.environmentId} threadId={parent.id} />,
+    );
+  });
+  renderer!.root.findByProps({ "aria-label": "Agents" });
+  const rendered = JSON.stringify(renderer!.toJSON());
+  expect(rendered).toContain("Child");
+  expect(rendered).not.toContain("Conversations");
+  expect(rendered).not.toContain("Direct spawns");
 });
 
 it("retains unsent instructions on failure and routes send/stop to the child environment", async () => {

@@ -5,7 +5,14 @@ const T3CODE_CODEX_LAUNCH_ARGS_ENV = "T3CODE_CODEX_LAUNCH_ARGS";
 export const resolveCodexLaunchArgs = (
   launchArgs?: string,
   environment: NodeJS.ProcessEnv = process.env,
-) => environment[T3CODE_CODEX_LAUNCH_ARGS_ENV]?.trim() || launchArgs?.trim() || "";
+  autoCompactWindow?: string,
+) => {
+  const args = environment[T3CODE_CODEX_LAUNCH_ARGS_ENV]?.trim() || launchArgs?.trim() || "";
+  // The explicit instance setting wins over a duplicate launch-argument override.
+  return autoCompactWindow
+    ? `${args} -c model_auto_compact_token_limit=${autoCompactWindow}`.trim()
+    : args;
+};
 
 const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenizeCliArgs(launchArgs);
 

@@ -157,6 +157,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 - `packages/client-runtime` - client code shared by web and mobile.
 - `.repos/` - vendored read-only references. Prefer their patterns over invented ones. Never edit or import from them. Sync with `vpr sync:repos` when bumping the matching dependency.
 
+## Agent-facing prompt parity
+
+Changes to provider behavior, model capabilities, T3-managed child agents, or agent-visible tools must also review and update T3's shared runtime instructions and their tests. An implementation is incomplete when the capability exists but agents are not told how to discover or use it. Keep provider-specific claims conditional on the corresponding tool or configuration being available.
+
 ## Taste
 
 - Complexity belongs at the adapter boundary. Orchestration stays pure, UI stays dumb.

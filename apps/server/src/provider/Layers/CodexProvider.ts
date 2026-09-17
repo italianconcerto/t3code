@@ -596,7 +596,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const probeResult = yield* probe({
     binaryPath: codexSettings.binaryPath,
     homePath: codexSettings.homePath,
-    launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
+    launchArgs: resolveCodexLaunchArgs(
+      codexSettings.launchArgs,
+      resolvedEnvironment,
+      codexSettings.autoCompactWindow,
+    ),
     cwd: process.cwd(),
     customModels: codexSettings.customModels,
     environment: resolvedEnvironment,

@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  CodexSettings,
   DEFAULT_SERVER_SETTINGS,
   OpenRouterSettings,
   resolveProviderInstanceEnabled,
@@ -129,6 +130,27 @@ describe("custom model settings", () => {
       decodeServerSettingsPatch({ providers: { codex: { customModels: [{ name: "no slug" }] } } }),
     ).toThrow();
   });
+});
+
+describe("CodexSettings auto-compaction", () => {
+  const decode = Schema.decodeUnknownSync(CodexSettings);
+  it("preserves defaults and accepts an explicit token threshold", () => {
+    expect(decode({}).autoCompactWindow).toBe("");
+    expect(decode({ autoCompactWindow: "200000" }).autoCompactWindow).toBe("200000");
+    expect(
+      decodeServerSettingsPatch({ providers: { codex: { autoCompactWindow: "" } } }).providers
+        ?.codex?.autoCompactWindow,
+    ).toBe("");
+  });
+  it.each(["0", "-1", "300k", "1.5", "1000000000", "200000 --enable foo"])(
+    "rejects invalid thresholds in full settings and patches: %s",
+    (value) => {
+      expect(() => decode({ autoCompactWindow: value })).toThrow();
+      expect(() =>
+        decodeServerSettingsPatch({ providers: { codex: { autoCompactWindow: value } } }),
+      ).toThrow();
+    },
+  );
 });
 
 describe("ClaudeSettings auto-compaction", () => {

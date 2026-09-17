@@ -5,6 +5,7 @@ import {
   MessageId,
   ThreadLinkedPullRequest,
   UserInputRequestedPayload,
+  isHiddenAgentMessageId,
   isImportedAgentSessionMessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -104,7 +105,7 @@ function hasQueuedTurnStartForThread(
   let latestUserMessageAt: string | null = null;
   let latestUserMessageAtMs = Number.NEGATIVE_INFINITY;
   for (const message of thread.messages) {
-    if (message.role !== "user" || isImportedAgentSessionMessageId(message.id)) continue;
+    if (message.role !== "user" || isHiddenAgentMessageId(message.id)) continue;
     const messageAtMs = Date.parse(message.createdAt);
     latestUserMessageAtMs = Math.max(latestUserMessageAtMs, messageAtMs);
     if (messageAtMs === latestUserMessageAtMs) {
@@ -1766,7 +1767,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.delta": {
-      if (isImportedAgentSessionMessageId(command.messageId)) {
+      if (isHiddenAgentMessageId(command.messageId)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Message id '${command.messageId}' uses the reserved imported-session namespace.`,
@@ -1799,7 +1800,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.complete": {
-      if (isImportedAgentSessionMessageId(command.messageId)) {
+      if (isHiddenAgentMessageId(command.messageId)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Message id '${command.messageId}' uses the reserved imported-session namespace.`,

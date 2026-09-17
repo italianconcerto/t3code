@@ -566,10 +566,7 @@ function AgentConversations(props: {
       key={`${props.environmentId}:${props.threadId}`}
       environmentId={props.environmentId}
       threadId={props.threadId}
-      hasNativeAgents={props.model.hasAgents}
-    >
-      {nativePanel}
-    </ManagedAgentsPanel>
+    />
   ) : (
     nativePanel
   );

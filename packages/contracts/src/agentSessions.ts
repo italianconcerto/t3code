@@ -26,6 +26,15 @@ export function isImportedAgentSessionMessageId(messageId: string): boolean {
 }
 
 /**
+ * Internal agent-control messages drive a durable turn but are never part of
+ * the conversation presented to a person. They must remain in the transcript
+ * sent to the provider, so a parent can act on a child completion.
+ */
+export function isHiddenAgentMessageId(messageId: string): boolean {
+  return isImportedAgentSessionMessageId(messageId) || messageId.startsWith("internal:");
+}
+
+/**
  * Empty for now. Kept as a struct so future scan options (source filters,
  * explicit roots) can be added without a new method.
  */

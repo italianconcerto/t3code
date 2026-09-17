@@ -37,7 +37,7 @@ const noParameters = Schema.Record(Schema.String, Schema.Never);
 
 const Models = Tool.make("t3_agent_models", {
   description:
-    "List a page of available models for T3-managed child agents, optionally filtered by provider instance. Pass nextOffset as offset to read more; null means the end. A child may use a different provider or subscription from its parent. Restart pagination if provider configuration changes.",
+    "List the live model catalog before choosing a T3-managed child agent. Optionally filter by provider instance; pass nextOffset as offset to read more, and null means the end. A child may use any configured provider or subscription independently of its parent, including OpenRouter models such as DeepSeek. Restart pagination if provider configuration changes.",
   parameters: Schema.Struct({
     instanceId: Schema.optional(ProviderInstanceId),
     offset: Schema.optional(NonNegativeInt),
@@ -58,7 +58,7 @@ const Models = Tool.make("t3_agent_models", {
 
 const Spawn = Tool.make("t3_agent_spawn", {
   description:
-    "Create and start a durable T3 child chat. Choose a model from t3_agent_models. Use a unique requestId for each new task; reuse it only when retrying the same spawn. The child inherits the project, checkout and permission mode, but has its own provider session. Include all context it needs in prompt.",
+    "Create and start a durable T3 child chat. Always choose a live modelSelection returned by t3_agent_models; it may belong to a different provider or subscription than the parent. Use a unique requestId for each new task; reuse it only when retrying the same spawn. The child inherits the project, checkout and permission mode, but has its own provider session. Give it a finite, self-contained task and tell it to finish with its result: it must not wait for the parent or user unless genuinely blocked. Include all context it needs in prompt.",
   parameters: Schema.Struct({
     requestId: TrimmedNonEmptyString,
     title: TrimmedNonEmptyString,
@@ -120,18 +120,21 @@ const Send = Tool.make("t3_agent_send", {
 
 const Wait = Tool.make("t3_agent_wait", {
   description:
-    "Wait for new persisted activity from a child after the sequence returned by spawn or get. Acquires an event subscription and replays missed events, so updates are not lost between calls or reconnects. Returns on any child event, not necessarily completion; call t3_agent_get to inspect the result. A timeout does not mean the agent stopped.",
+    "Wait for a child after the sequence returned by spawn or get. By default it returns only when the child settles (ready, interrupted, stopped or error), which notifies and unblocks the parent. It replays missed events, so completion is not lost between calls or reconnects. Use untilSettled=false only when progress notifications are specifically needed. A timeout does not mean the agent stopped.",
   parameters: Schema.Struct({
     threadId: ThreadId,
     afterSequence: NonNegativeInt,
     timeoutSeconds: Schema.optional(
       Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 60 })),
     ),
+    untilSettled: Schema.optional(Schema.Boolean),
   }),
   success: Schema.Struct({
     threadId: ThreadId,
     sequence: NonNegativeInt,
     timedOut: Schema.Boolean,
+    status: Schema.String,
+    settled: Schema.Boolean,
   }),
   failure: AgentToolError,
   dependencies,

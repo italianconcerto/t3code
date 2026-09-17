@@ -36,6 +36,9 @@ const summarize = (thread: OrchestrationThreadShell) => ({
   status: thread.session?.status ?? (thread.latestUserMessageAt ? "pending" : "idle"),
 });
 
+const childIsSettled = (status: string) =>
+  status === "ready" || status === "interrupted" || status === "stopped" || status === "error";
+
 const childPrecondition = (parent: OrchestrationThreadShell, child: OrchestrationThreadShell) => ({
   parentThreadId: parent.id,
   parentCreatedAt: parent.createdAt,
@@ -330,59 +333,94 @@ export const agentsToolkitHandlers = {
       }
       return { threadId, message: "Instructions recorded and delivery requested." };
     }),
-  t3_agent_wait: ({ threadId, afterSequence, timeoutSeconds = 30 }) =>
+  t3_agent_wait: ({ threadId, afterSequence, timeoutSeconds = 30, untilSettled = true }) =>
     Effect.gen(function* () {
       const original = yield* childContext(threadId);
       const engine = yield* OrchestrationEngineService;
       const events = yield* engine.subscribeDomainEvents;
-      const head = yield* engine.latestSequence;
-      if (afterSequence > head) {
-        return yield* new AgentToolError({
-          message: "The sequence is ahead of this environment. Read the child state again.",
-        });
-      }
-      const missed = yield* engine
-        .readThreadEvents({
-          threadId,
-          fromSequenceExclusive: afterSequence,
-          toSequenceInclusive: head,
-          limit: 1,
-        })
-        .pipe(
-          Stream.runHead,
-          Effect.mapError(
-            () => new AgentToolError({ message: "Could not replay child activity." }),
-          ),
+      const currentStatus = () =>
+        childContext(threadId).pipe(
+          Effect.flatMap((current) => {
+            if (
+              current.child.createdAt !== original.child.createdAt ||
+              current.parent.createdAt !== original.parent.createdAt
+            ) {
+              return new AgentToolError({
+                message: "The child or parent chat was replaced while waiting.",
+              });
+            }
+            return Effect.succeed(summarize(current.child).status);
+          }),
         );
-      const next = Option.isSome(missed)
-        ? missed
-        : yield* events.pipe(
-            Stream.filter(
-              (event) =>
-                event.aggregateKind === "thread" &&
-                event.aggregateId === threadId &&
-                event.sequence > afterSequence,
-            ),
-            Stream.runHead,
-            Effect.timeoutOrElse({
-              duration: `${timeoutSeconds} seconds`,
-              orElse: () => Effect.succeed(Option.none()),
-            }),
-          );
-      const current = yield* childContext(threadId);
-      if (
-        current.child.createdAt !== original.child.createdAt ||
-        current.parent.createdAt !== original.parent.createdAt
-      ) {
-        return yield* new AgentToolError({
-          message: "The child or parent chat was replaced while waiting.",
+      const nextEvent = (cursor: number) =>
+        Effect.gen(function* () {
+          const head = yield* engine.latestSequence;
+          if (cursor > head) {
+            return yield* new AgentToolError({
+              message: "The sequence is ahead of this environment. Read the child state again.",
+            });
+          }
+          const missed = yield* engine
+            .readThreadEvents({
+              threadId,
+              fromSequenceExclusive: cursor,
+              toSequenceInclusive: head,
+              limit: 1,
+            })
+            .pipe(
+              Stream.runHead,
+              Effect.mapError(
+                () => new AgentToolError({ message: "Could not replay child activity." }),
+              ),
+            );
+          return Option.isSome(missed)
+            ? missed.value.sequence
+            : yield* events.pipe(
+                Stream.filter(
+                  (event) =>
+                    event.aggregateKind === "thread" &&
+                    event.aggregateId === threadId &&
+                    event.sequence > cursor,
+                ),
+                Stream.runHead,
+                Effect.map((event) => Option.getOrThrow(event).sequence),
+              );
         });
-      }
-      return {
-        threadId,
-        sequence: Option.isSome(next) ? next.value.sequence : afterSequence,
-        timedOut: Option.isNone(next),
-      };
+      const waitForResult = (
+        cursor: number,
+      ): Effect.Effect<
+        { readonly sequence: number; readonly status: string; readonly settled: boolean },
+        AgentToolError,
+        never
+      > =>
+        Effect.gen(function* () {
+          const status = yield* currentStatus();
+          if (untilSettled && childIsSettled(status)) {
+            return { sequence: cursor, status, settled: true };
+          }
+          const sequence = yield* nextEvent(cursor);
+          const updatedStatus = yield* currentStatus();
+          if (!untilSettled || childIsSettled(updatedStatus)) {
+            return { sequence, status: updatedStatus, settled: childIsSettled(updatedStatus) };
+          }
+          return yield* waitForResult(sequence);
+        });
+      return yield* waitForResult(afterSequence).pipe(
+        Effect.map((result) => ({ threadId, ...result, timedOut: false })),
+        Effect.timeoutOrElse({
+          duration: `${timeoutSeconds} seconds`,
+          orElse: () =>
+            currentStatus().pipe(
+              Effect.map((status) => ({
+                threadId,
+                sequence: afterSequence,
+                timedOut: true,
+                status,
+                settled: childIsSettled(status),
+              })),
+            ),
+        }),
+      );
     }).pipe(Effect.scoped),
 } satisfies Parameters<typeof AgentsToolkit.toLayer>[0];
 

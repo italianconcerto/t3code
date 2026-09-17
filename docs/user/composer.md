@@ -138,6 +138,13 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+To set an automatic threshold on web or desktop, open **Settings → Providers**,
+select the environment and provider instance, then set **Auto-compact after** in
+tokens. Codex and Claude support this override; Claude accepts 100,000–1,000,000.
+Clear the field to restore the provider's configuration or model default. Changes
+apply when a provider session starts, and do not enlarge the model's context window.
+Other adapters indicate when a custom threshold is not exposed by T3.
+
 ### Goals and recurring prompts
 
 Send `/goal Finish the migration` to start a persistent goal managed by T3 Code.

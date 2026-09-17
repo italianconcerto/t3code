@@ -1,6 +1,6 @@
 import {
   ApprovalRequestId,
-  isImportedAgentSessionMessageId,
+  isHiddenAgentMessageId,
   UserInputAttachmentAnswerPayload,
   type ChatAttachment,
   type OrchestrationEvent,
@@ -225,7 +225,7 @@ function retainProjectionMessagesAfterRevert(
   }
 
   for (const message of messages) {
-    if (message.role === "system" || isImportedAgentSessionMessageId(message.messageId)) {
+    if (message.role === "system" || isHiddenAgentMessageId(message.messageId)) {
       retainedMessageIds.add(message.messageId);
       continue;
     }
@@ -237,7 +237,7 @@ function retainProjectionMessagesAfterRevert(
   const retainedUserCount = messages.filter(
     (message) =>
       message.role === "user" &&
-      !isImportedAgentSessionMessageId(message.messageId) &&
+      !isHiddenAgentMessageId(message.messageId) &&
       retainedMessageIds.has(message.messageId),
   ).length;
   const missingUserCount = Math.max(0, turnCount - retainedUserCount);
@@ -263,7 +263,7 @@ function retainProjectionMessagesAfterRevert(
   const retainedAssistantCount = messages.filter(
     (message) =>
       message.role === "assistant" &&
-      !isImportedAgentSessionMessageId(message.messageId) &&
+      !isHiddenAgentMessageId(message.messageId) &&
       retainedMessageIds.has(message.messageId),
   ).length;
   const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
@@ -898,7 +898,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
             latestUserMessageAt:
               event.payload.role === "user" &&
-              !isImportedAgentSessionMessageId(event.payload.messageId) &&
+              !isHiddenAgentMessageId(event.payload.messageId) &&
               (previousLatest === null || event.payload.createdAt > previousLatest)
                 ? event.payload.createdAt
                 : previousLatest,

@@ -178,7 +178,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const outputPath = yield* writeTempFile(operation, "codex-output", "");
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
-      const launchArgs = resolveCodexLaunchArgs(codexConfig.launchArgs, resolvedEnvironment);
+      const launchArgs = resolveCodexLaunchArgs(
+        codexConfig.launchArgs,
+        resolvedEnvironment,
+        codexConfig.autoCompactWindow,
+      );
       const reasoningEffort =
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
