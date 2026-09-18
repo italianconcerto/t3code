@@ -141,8 +141,9 @@ provider supports it. Web and desktop also offer compaction from the context met
 To set an automatic threshold on web or desktop, open **Settings → Providers**,
 select the environment and provider instance, then set **Auto-compact after** in
 tokens. Codex and Claude support this override; Claude accepts 100,000–1,000,000.
-Clear the field to restore the provider's configuration or model default. Changes
-apply when a provider session starts, and do not enlarge the model's context window.
+Clear the field to restore the provider's configuration or model default. Existing
+chats restart their provider session on the next turn, so the setting applies
+without creating a new chat. It does not enlarge the model's context window.
 Other adapters indicate when a custom threshold is not exposed by T3.
 
 ### Goals and recurring prompts

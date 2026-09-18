@@ -1468,6 +1468,11 @@ const make = Effect.gen(function* () {
   const goalContinuationCommandId = (goal: ManagedGoals.ManagedGoal) =>
     CommandId.make(`managed-goal-continuation:${goal.goalId}:${goal.turnNumber}`);
 
+  // Continuations are control turns, not user messages. Keep their identity
+  // internal so clients never render a synthetic "continue working" bubble.
+  const goalContinuationMessageId = (goal: ManagedGoals.ManagedGoal) =>
+    MessageId.make(`internal:managed-goal:${goal.goalId}:${goal.turnNumber}`);
+
   const runDueGoals = Effect.fn("runDueGoals")(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     for (const goal of yield* managedGoalRepository.listActive()) {
@@ -1523,9 +1528,12 @@ const make = Effect.gen(function* () {
           commandId: goalContinuationCommandId(goal),
           threadId: goal.threadId,
           message: {
-            messageId: MessageId.make(yield* crypto.randomUUIDv4),
+            messageId: goalContinuationMessageId(goal),
             role: "user",
-            text: "Continue working toward the active goal. Verify the result before completing it.",
+            // The goal wrapper supplies the durable instruction. Repeating a
+            // generic imperative here made it look like an unrelated user
+            // request and could steer the provider away from the objective.
+            text: goal.objective,
             attachments: [],
           },
           modelSelection: thread.modelSelection,

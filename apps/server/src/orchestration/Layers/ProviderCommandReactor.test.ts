@@ -1539,7 +1539,12 @@ describe("ProviderCommandReactor", () => {
       expect(harness.sendTurn).toHaveBeenCalledTimes(2);
       expect(harness.sendTurn).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          input: expect.stringContaining("Continue working toward the active goal"),
+          input: expect.stringContaining("<current_request>\nFinish it\n</current_request>"),
+        }),
+      );
+      expect(harness.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          input: expect.not.stringContaining("Continue working toward the active goal"),
         }),
       );
     },
@@ -1866,10 +1871,7 @@ describe("ProviderCommandReactor", () => {
       // Reproduce a due tick whose generated start reaches the worker after Stop.
       await harness.runEffect(
         harness.engine.dispatch({
-          ...commandInput(
-            "Continue working toward the active goal. Verify the result before completing it.",
-            "stale-goal-start",
-          ),
+          ...commandInput("Check progress", "stale-goal-start"),
           commandId: CommandId.make(
             `managed-goal-continuation:${claimedGoal?.goalId}:${claimedGoal?.turnNumber}`,
           ),

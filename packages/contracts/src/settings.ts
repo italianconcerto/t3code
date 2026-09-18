@@ -535,7 +535,7 @@ const autoCompactWindowSetting = (pattern: RegExp, range: string) =>
     Schema.withDecodingDefault(Effect.succeed("")),
     Schema.annotateKey({
       title: "Auto-compact after",
-      description: `${range} Leave empty to use the provider's configuration or model default. Applies when a provider session starts.`,
+      description: `${range} Leave empty to use the provider's configuration or model default. Existing chats restart their provider session on the next turn.`,
       providerSettingsForm: { placeholder: "Default (tokens)", clearWhenEmpty: "omit" },
     }),
   );
